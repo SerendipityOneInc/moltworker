@@ -29,8 +29,8 @@
   },
   "devDependencies": {
     "@cloudflare/sandbox": "^0.7.20",
-    "@cloudflare/vite-plugin": "^1.0.0",
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/vite-plugin": "^1.57.2",
+    "@cloudflare/workers-types": "^5.20260922.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
@@ -41,7 +41,7 @@
     "typescript": "^5.9.3",
     "vite": "^6.0.0",
     "vitest": "^4.0.18",
-    "wrangler": "^4.50.0"
+    "wrangler": "^4.136.2"
   },
   "author": "",
   "license": "Apache-2.0",

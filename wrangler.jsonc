@@ -46,6 +46,18 @@
         "disk_mb": 8000,
       },
       "max_instances": 1,
+      // SSH via `wrangler containers ssh <instance-id>` (authenticated with the
+      // Cloudflare account; no public port). Only ssh-ed25519 keys are supported.
+      // Remove or replace the key if you deploy this repo yourself.
+      "ssh": {
+        "enabled": true,
+      },
+      "authorized_keys": [
+        {
+          "name": "allenz",
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA+AhtCFXKMUhqew7jZqLHItDkALNPcX0Z3Jd0oXWsVc",
+        },
+      ],
     },
   ],
   "durable_objects": {
