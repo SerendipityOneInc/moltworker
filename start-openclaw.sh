@@ -24,7 +24,10 @@ if ! flock -n 9; then
     exit 0
 fi
 
-if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
+# OpenClaw >= 2026.9 runs the gateway as a single process titled
+# "openclaw-gateway" (its command line no longer contains "openclaw gateway"),
+# so check the process name and the port.
+if pgrep -x openclaw-gateway > /dev/null 2>&1 || nc -z localhost 18789 > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
     exit 0
 fi
@@ -117,9 +120,10 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
 config.gateway.controlUi = config.gateway.controlUi || {};
 config.gateway.controlUi.allowedOrigins = ['*'];
 
-if (process.env.OPENCLAW_DEV_MODE === 'true') {
-    config.gateway.controlUi = config.gateway.controlUi || {};
-    config.gateway.controlUi.allowInsecureAuth = true;
+// controlUi.allowInsecureAuth was removed in OpenClaw 2026.9 (strict schema);
+// drop it from configs written by older versions.
+if (config.gateway.controlUi) {
+    delete config.gateway.controlUi.allowInsecureAuth;
 }
 
 // Legacy AI Gateway base URL override:
@@ -172,6 +176,18 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     }
 }
 
+// Agent heartbeat interval (e.g. "4h"; "0m" disables). Each heartbeat is a
+// full model call with the agent's system prompt, so the 30m default adds up.
+if (process.env.HEARTBEAT_EVERY) {
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.heartbeat = {
+        ...(config.agents.defaults.heartbeat || {}),
+        every: process.env.HEARTBEAT_EVERY,
+    };
+    console.log('Heartbeat interval: ' + process.env.HEARTBEAT_EVERY);
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)
@@ -190,18 +206,18 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // Discord configuration
-// Discord uses a nested dm object: dm.policy, dm.allowFrom (per DiscordDmConfig)
+// OpenClaw 2026.9 rejects dm.policy / dm.allowFrom; use top-level dmPolicy /
+// allowFrom (also accepted by older versions)
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
-    const dm = { policy: dmPolicy };
-    if (dmPolicy === 'open') {
-        dm.allowFrom = ['*'];
-    }
     config.channels.discord = {
         token: process.env.DISCORD_BOT_TOKEN,
         enabled: true,
-        dm: dm,
+        dmPolicy: dmPolicy,
     };
+    if (dmPolicy === 'open') {
+        config.channels.discord.allowFrom = ['*'];
+    }
 }
 
 // Slack configuration

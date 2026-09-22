@@ -49,7 +49,7 @@ src/
 
 ### Environment Variables
 
-- `DEV_MODE` - Skips CF Access auth AND bypasses device pairing (maps to `OPENCLAW_DEV_MODE` for container)
+- `DEV_MODE` - Skips CF Access auth (maps to `OPENCLAW_DEV_MODE` for container). OpenClaw >= 2026.9 removed `controlUi.allowInsecureAuth`, so it no longer bypasses device pairing
 - `DEBUG_ROUTES` - Enables `/debug/*` routes (disabled by default)
 - See `src/types.ts` for full `MoltbotEnv` interface
 
@@ -174,7 +174,7 @@ For local development, create `.dev.vars`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-DEV_MODE=true           # Skips CF Access auth + device pairing
+DEV_MODE=true           # Skips CF Access auth
 DEBUG_ROUTES=true       # Enables /debug/* routes
 ```
 
@@ -220,7 +220,7 @@ These are the env vars passed TO the container (internal names):
 | `CF_AI_GATEWAY_ACCOUNT_ID` | (env var) | Account ID for AI Gateway |
 | `CF_AI_GATEWAY_GATEWAY_ID` | (env var) | Gateway ID for AI Gateway |
 | `OPENCLAW_GATEWAY_TOKEN` | `--token` flag | Mapped from `MOLTBOT_GATEWAY_TOKEN` |
-| `OPENCLAW_DEV_MODE` | `controlUi.allowInsecureAuth` | Mapped from `DEV_MODE` |
+| `OPENCLAW_DEV_MODE` | (none) | Mapped from `DEV_MODE`; `controlUi.allowInsecureAuth` no longer exists in OpenClaw >= 2026.9 |
 | `TELEGRAM_BOT_TOKEN` | `channels.telegram.botToken` | |
 | `DISCORD_BOT_TOKEN` | `channels.discord.token` | |
 | `SLACK_BOT_TOKEN` | `channels.slack.botToken` | |
