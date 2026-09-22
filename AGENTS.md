@@ -19,6 +19,11 @@ src/
 ├── index.ts          # Main Hono app, route mounting
 ├── types.ts          # TypeScript type definitions
 ├── config.ts         # Constants (ports, timeouts, paths)
+├── persistence.ts    # Snapshot backup/restore of /home/openclaw
+├── cron/             # Workers Cron Trigger handlers
+│   ├── handler.ts    # Entry point: scheduled backups + cron wake
+│   ├── backup.ts     # Automatic backup scheduling
+│   └── wake.ts       # Wake container before OpenClaw cron jobs
 ├── auth/             # Cloudflare Access authentication
 │   ├── jwt.ts        # JWT verification
 │   ├── jwks.ts       # JWKS fetching and caching
@@ -26,8 +31,6 @@ src/
 ├── gateway/          # OpenClaw gateway management
 │   ├── process.ts    # Process lifecycle (find, start)
 │   ├── env.ts        # Environment variable building
-│   ├── r2.ts         # R2 bucket mounting
-│   ├── sync.ts       # R2 backup sync logic
 │   └── utils.ts      # Shared utilities (waitForProcess)
 ├── routes/           # API route handlers
 │   ├── api.ts        # /api/* endpoints (devices, gateway)
@@ -46,6 +49,14 @@ src/
 - `DEV_MODE` - Skips CF Access auth AND bypasses device pairing (maps to `OPENCLAW_DEV_MODE` for container)
 - `DEBUG_ROUTES` - Enables `/debug/*` routes (disabled by default)
 - See `src/types.ts` for full `MoltbotEnv` interface
+
+### Gateway Token Auto-Fill
+
+The Control UI sends the gateway token inside the signed WebSocket `connect` frame and stores it in per-tab sessionStorage, so the Worker can't inject it on the wire. Instead `src/gateway/token-script.ts` injects `<script src="/_moltworker/gateway-token.js">` into proxied HTML; the script adds `#token=` to the URL when the tab has no stored token, which the UI picks up and strips. The gateway's CSP only allows `script-src 'self'`, so the script must be same-origin, not inline.
+
+### Custom Domain
+
+`vite.config.ts` reads `WORKER_CUSTOM_DOMAIN` (environment or gitignored `.env.local`) at build time and, when set, adds it as a custom domain and disables `workers.dev`. Keep deployment-specific hostnames out of `wrangler.jsonc`.
 
 ### CLI Commands
 
@@ -69,7 +80,7 @@ stdout.toLowerCase().includes('approved')
 npm test              # Run tests (vitest)
 npm run test:watch    # Run tests in watch mode
 npm run build         # Build worker + client
-npm run deploy        # Build and deploy to Cloudflare
+npm run deploy        # Build and deploy to Cloudflare (always use this; bare `wrangler deploy` reuses a stale dist/)
 npm run dev           # Vite dev server
 npm run start         # wrangler dev (local worker)
 npm run typecheck     # TypeScript check
@@ -85,8 +96,9 @@ Current test coverage:
 - `auth/middleware.test.ts` - Auth middleware behavior
 - `gateway/env.test.ts` - Environment variable building
 - `gateway/process.test.ts` - Process finding logic
-- `gateway/r2.test.ts` - R2 mounting logic
-- `gateway/sync.test.ts` - R2 backup sync logic
+- `persistence.test.ts` - Snapshot create and restore
+- `cron/backup.test.ts` - Automatic backup scheduling
+- `cron/wake.test.ts` - Cron wake-ahead logic
 
 When adding new functionality, add corresponding tests.
 
@@ -137,7 +149,7 @@ Browser
 |------|---------|
 | `src/index.ts` | Worker that manages sandbox lifecycle and proxies requests |
 | `Dockerfile` | Container image based on `cloudflare/sandbox` with Node 22 + OpenClaw |
-| `start-openclaw.sh` | Startup script: R2 restore → onboard → config patch → launch gateway |
+| `start-openclaw.sh` | Startup script: onboard → config patch → launch gateway |
 | `wrangler.jsonc` | Cloudflare Worker + Container configuration |
 
 ## Local Development
@@ -175,7 +187,7 @@ The Dockerfile includes a cache bust comment. When changing `start-openclaw.sh`,
 
 OpenClaw configuration is built at container startup:
 
-1. R2 backup is restored if available (with migration from legacy `.clawdbot` paths)
+1. The Worker restores `/home/openclaw` from R2 before starting the gateway (see R2 Storage Notes)
 2. If no config exists, `openclaw onboard --non-interactive` creates one based on env vars
 3. `start-openclaw.sh` patches the config for channels, gateway auth, and trusted proxies
 4. Gateway starts with `openclaw gateway --allow-unconfigured --bind lan`
@@ -248,14 +260,16 @@ Enable debug routes with `DEBUG_ROUTES=true` and check `/debug/processes`.
 
 ## R2 Storage Notes
 
-R2 is mounted via s3fs at `/data/moltbot`. Important gotchas:
+Persistence lives in `src/persistence.ts` and runs from the Worker, not the container. `/home/openclaw` (HOME; `/root/.openclaw` and `/root/clawd` symlink into it) is backed up with `sandbox.createBackup()` squashfs snapshots. Handles are stored newest-first in `backup-handles.json` (the newest is mirrored to legacy `backup-handle.json`) and the last 3 are kept. Snapshots are pruned by count, so their TTL is set long (90 days) and only matters if scheduled backups stop.
 
-- **rsync compatibility**: Use `rsync -r --no-times` instead of `rsync -a`. s3fs doesn't support setting timestamps, which causes rsync to fail with "Input/output error".
+Gotchas:
 
-- **Mount checking**: Don't rely on `sandbox.mountBucket()` error messages to detect "already mounted" state. Instead, check `mount | grep s3fs` to verify the mount status.
-
-- **Never delete R2 data**: The mount directory `/data/moltbot` IS the R2 bucket. Running `rm -rf /data/moltbot/*` will DELETE your backup data. Always check mount status before any destructive operations.
-
-- **Process status**: The sandbox API's `proc.status` may not update immediately after a process completes. Instead of checking `proc.status === 'completed'`, verify success by checking for expected output (e.g., timestamp file exists after sync).
-
-- **R2 prefix migration**: Backups are now stored under `openclaw/` prefix in R2 (was `clawdbot/`). The startup script handles restoring from both old and new prefixes with automatic migration.
+- **Restore order**: newest snapshot → older snapshots (if expired/not found). Transient restore errors are rethrown rather than falling back, so a temporary failure never rolls state back. If every snapshot is gone the container starts fresh; the expired objects stay in R2 under `backups/<id>/`.
+- **Restore marker**: after a successful restore (or when R2 has no backups) the Worker writes `/tmp/moltworker-state-ok` in the container. `/tmp` is wiped on container restart. `isSafeToBackup()` requires this marker, so a container running with empty state never overwrites good backups. `POST /api/admin/storage/sync?force=true` bypasses it.
+- **Restore only before starting the gateway**: `restoreBackup()` unmounts and remounts `/home/openclaw` as a FUSE overlay. Only call `restoreIfNeeded` from the catch-all proxy and `/api/status`.
+- **createBackup is non-destructive**: it runs `mksquashfs` on the merged overlay view. It is safe while the gateway runs; partially written files may be inconsistent.
+- **Expired snapshots are not deleted by the SDK**: `createSnapshot` deletes pruned snapshots' R2 objects itself.
+- **Automatic backups** run from the cron trigger (`src/cron/backup.ts`) only when `SANDBOX_SLEEP_AFTER=never`, because the RPCs would keep a sleeping container awake. An R2 lock (`backup-lock`) prevents overlap, and `backup-state.json` records the last attempt so failures retry after one interval rather than every minute.
+- **Credentials**: the SDK needs `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `CLOUDFLARE_ACCOUNT_ID` and `BACKUP_BUCKET_NAME` to create presigned URLs. `BACKUP_BUCKET_NAME` has no default.
+- **Process status**: The sandbox API's `proc.status` may not update immediately after a process completes. Instead of checking `proc.status === 'completed'`, verify success by checking for expected output.
+- **Cron store**: `cron/wake.ts` reads `openclaw/cron/jobs.json` from R2, but nothing currently writes it (the container-side sync that did was removed), so wake-ahead is inactive.

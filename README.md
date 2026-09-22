@@ -150,6 +150,19 @@ If you prefer more control, you can manually create an Access application:
 6. Configure your desired identity providers (e.g., email OTP, Google, GitHub)
 7. Copy the **Application Audience (AUD)** tag and set the secrets as shown above
 
+### Custom Domain
+
+To serve the Worker on your own domain instead of `workers.dev`, set `WORKER_CUSTOM_DOMAIN` in a `.env.local` file (gitignored) or the environment when building:
+
+```bash
+echo "WORKER_CUSTOM_DOMAIN=bot.example.com" > .env.local
+npm run deploy
+```
+
+The domain must be on a zone in your Cloudflare account. The build adds it as a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (DNS record and certificate are created automatically) and disables the `workers.dev` URL. Point your Access application at this domain instead of `workers.dev`.
+
+Always deploy with `npm run deploy`: it rebuilds first, while a bare `wrangler deploy` reuses the last build in `dist/`.
+
 ### Local Development
 
 For local development, create a `.dev.vars` file with:
@@ -174,11 +187,10 @@ This is the most secure option as it requires explicit approval for each device.
 
 ### Gateway Token (Required)
 
-A gateway token is required to access the Control UI when hosted remotely. Pass it as a query parameter:
+A gateway token (`MOLTBOT_GATEWAY_TOKEN`) is required to access the Control UI when hosted remotely. Users who pass Cloudflare Access don't need to enter it: the Worker hands it to the Control UI through a same-origin script (`/_moltworker/gateway-token.js`) that is itself behind Access. To pass it manually instead, use a query parameter:
 
 ```
 https://your-worker.workers.dev/?token=YOUR_TOKEN
-wss://your-worker.workers.dev/ws?token=YOUR_TOKEN
 ```
 
 **Note:** Even with a valid token, new devices still require approval via the admin UI at `/_admin/` (see Device Pairing above).
@@ -207,26 +219,31 @@ npx wrangler secret put R2_ACCESS_KEY_ID
 npx wrangler secret put R2_SECRET_ACCESS_KEY
 
 # Your Cloudflare Account ID
-npx wrangler secret put CF_ACCOUNT_ID
+npx wrangler secret put CLOUDFLARE_ACCOUNT_ID
+
+# R2 bucket name (must match bucket_name in wrangler.jsonc)
+npx wrangler secret put BACKUP_BUCKET_NAME
+# Enter: moltbot-data
 ```
 
 To find your Account ID: Go to the [Cloudflare Dashboard](https://dash.cloudflare.com/), click the three dots menu next to your account name, and select "Copy Account ID".
 
 ### How It Works
 
-R2 storage uses a backup/restore approach for simplicity:
+Everything under `/home/openclaw` (OpenClaw config, paired devices, sessions, workspace and skills) is backed up to R2 as Sandbox SDK snapshots: squashfs archives that restore in seconds. The last 3 snapshots are kept, each restorable for 90 days.
 
-**On container startup:**
-- If R2 is mounted and contains backup data, it's restored to the moltbot config directory
-- OpenClaw uses its default paths (no special configuration needed)
+**On container startup:** the newest snapshot is restored. If it can't be found or has expired, older snapshots are tried.
 
-**During operation:**
-- A cron job runs every 5 minutes to sync the moltbot config to R2
-- You can also trigger a manual backup from the admin UI at `/_admin/`
+**During operation** (only when `SANDBOX_SLEEP_AFTER=never`, the default): the Worker's cron trigger takes a snapshot every 15 minutes. Tune with `BACKUP_INTERVAL_MINUTES` (`0` disables). A snapshot is also taken before the gateway is restarted from the admin UI.
+
+Backups are only taken when the container's state was restored from R2 (or R2 had no backups) in the current container's lifetime. This prevents a container that failed to restore — and is running with empty state — from overwriting good backups.
 
 **In the admin UI:**
 - When R2 is configured, you'll see "Last backup: [timestamp]"
-- Click "Backup Now" to trigger an immediate sync
+- Click "Backup Now" to take a snapshot immediately
+- `GET /api/admin/storage` lists snapshots and the last automatic backup result
+
+Changes made since the last snapshot are lost if the container restarts. Snapshots only capture files on disk, not running processes.
 
 Without R2 credentials, moltbot still works but uses ephemeral storage (data lost on container restart).
 
@@ -241,7 +258,9 @@ npx wrangler secret put SANDBOX_SLEEP_AFTER
 # Enter: 10m (or 1h, 30m, etc.)
 ```
 
-When the container sleeps, the next request will trigger a cold start. If you have R2 storage configured, your paired devices and data will persist across restarts.
+When the container sleeps, the next request will trigger a cold start. If you have R2 storage configured, your paired devices and data will persist across restarts. Automatic backups are disabled in this mode (they would keep the container awake), so use "Backup Now" in the admin UI before it goes idle.
+
+Chat channels (Telegram, Discord, Slack) connect outbound from the container, so incoming chat messages do not wake a sleeping container — keep the default if you use them.
 
 ## Admin UI
 
@@ -427,9 +446,11 @@ The previous `AI_GATEWAY_API_KEY` + `AI_GATEWAY_BASE_URL` approach is still supp
 | `DEV_MODE` | No | Set to `true` to skip CF Access auth + device pairing (local dev only) |
 | `DEBUG_ROUTES` | No | Set to `true` to enable `/debug/*` routes |
 | `SANDBOX_SLEEP_AFTER` | No | Container sleep timeout: `never` (default) or duration like `10m`, `1h` |
+| `BACKUP_INTERVAL_MINUTES` | No | Minutes between automatic snapshots (default: `15`, `0` disables) |
 | `R2_ACCESS_KEY_ID` | No | R2 access key for persistent storage |
 | `R2_SECRET_ACCESS_KEY` | No | R2 secret key for persistent storage |
-| `CF_ACCOUNT_ID` | No | Cloudflare account ID (required for R2 storage) |
+| `CLOUDFLARE_ACCOUNT_ID` | No | Cloudflare account ID (required for R2 storage) |
+| `BACKUP_BUCKET_NAME` | No | R2 bucket name, e.g. `moltbot-data` (required for R2 storage) |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot token |
 | `TELEGRAM_DM_POLICY` | No | Telegram DM policy: `pairing` (default) or `open` |
 | `DISCORD_BOT_TOKEN` | No | Discord bot token |
@@ -461,7 +482,7 @@ OpenClaw in Cloudflare Sandbox uses multiple authentication layers:
 
 **Slow first request:** Cold starts take 1-2 minutes. Subsequent requests are faster.
 
-**R2 not mounting:** Check that all three R2 secrets are set (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `CF_ACCOUNT_ID`). Note: R2 mounting only works in production, not with `wrangler dev`.
+**Backups failing:** Check that all four R2 secrets are set (`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `CLOUDFLARE_ACCOUNT_ID`, `BACKUP_BUCKET_NAME`); `GET /api/admin/storage` lists any that are missing, plus the last automatic backup errors.
 
 **Access denied on admin routes:** Ensure `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set, and that your Cloudflare Access application is configured correctly.
 
