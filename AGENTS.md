@@ -33,6 +33,7 @@ src/
 │   ├── process.ts    # Process lifecycle (find, start)
 │   ├── startup.ts    # ensureStarted: restore + start once, crash recovery
 │   ├── token-script.ts # Gateway token auto-fill for the Control UI
+│   ├── forwarded-headers.ts # Rebuild X-Forwarded-* for proxied requests
 │   ├── env.ts        # Environment variable building
 │   └── utils.ts      # Shared utilities (waitForProcess)
 ├── routes/           # API route handlers
@@ -56,6 +57,14 @@ src/
 ### Gateway Startup
 
 Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard.
+
+### Proxy Headers
+
+OpenClaw >= 2026.9 answers 403 `proxy_attribution_required` when a request carries forwarded headers (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`) unless it comes from a `gateway.trustedProxies` address and yields a non-loopback client IP. Cloudflare adds these headers to every request, so the Worker must pass proxied requests through `withTrustedForwardedHeaders()` (drops all client-supplied forwarded headers, sets `X-Forwarded-For` from `CF-Connecting-IP`), and `start-openclaw.sh` trusts private and loopback ranges, since only the Sandbox platform can reach the container port.
+
+### Upgrading OpenClaw
+
+Bump the version in the `Dockerfile` (check `npm view openclaw@<version> engines.node`) and redeploy. On first start with existing state, `start-openclaw.sh` runs `openclaw doctor --fix --non-interactive --yes` once per OpenClaw version (marker: `~/.openclaw/.moltworker-doctor-version`), because newer versions refuse to start until old state is migrated (2026.9 moved sessions to SQLite). The migration can take several minutes on Cloudflare, and it only persists once a snapshot is taken, so trigger "Backup Now" after the first successful start. Migrations are one-way: snapshots taken after an upgrade may not load on the old version, so keep a copy of the last pre-upgrade snapshot (e.g. under `archive/` in R2, outside the rotation) before upgrading. Test the migration locally against a downloaded snapshot on a native-arch image — `@openclaw/fs-safe` needs `openat2`, which amd64 emulation on Apple Silicon doesn't implement.
 
 ### Gateway Token Auto-Fill
 
