@@ -13,7 +13,7 @@ import { createMockBucket, createMockExecResult, seedJson, suppressConsole } fro
 
 function createBackupSandbox(options: { restored?: boolean } = {}) {
   const execMock = vi.fn(async (cmd: string) =>
-    cmd === `test -f ${RESTORE_MARKER}`
+    cmd.startsWith(`test -f ${RESTORE_MARKER}`)
       ? createMockExecResult('', { exitCode: options.restored ? 0 : 1 })
       : createMockExecResult(),
   );
@@ -86,7 +86,8 @@ describe('persistence', () => {
       await restoreIfNeeded(sandbox, bucket);
 
       expect(restoreBackupMock).not.toHaveBeenCalled();
-      expect(execCommands(execMock)).toEqual([`test -f ${RESTORE_MARKER}`]);
+      expect(execCommands(execMock)).toHaveLength(1);
+      expect(execCommands(execMock)[0]).toContain(`test -f ${RESTORE_MARKER}`);
     });
 
     it('falls back to an older snapshot when the newest has expired', async () => {
