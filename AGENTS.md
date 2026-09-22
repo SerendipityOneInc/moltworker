@@ -76,7 +76,7 @@ The Control UI sends the gateway token inside the signed WebSocket `connect` fra
 
 ### Custom Domain
 
-`vite.config.ts` reads `WORKER_CUSTOM_DOMAIN` (environment or gitignored `.env.local`) at build time and, when set, adds it as a custom domain and disables `workers.dev`. Keep deployment-specific hostnames out of `wrangler.jsonc`.
+`vite.config.ts` reads `WORKER_CUSTOM_DOMAIN` (environment or gitignored `.env.local`) at build time and, when set, adds it as a custom domain and disables `workers.dev`. `WORKER_SSH_PUBLIC_KEY` likewise enables container SSH (`ssh.enabled` + `authorized_keys`, ssh-ed25519 only). Keep deployment-specific hostnames and keys out of `wrangler.jsonc`. The config customizer mutates `containers` in place because returned arrays are concatenated, not replaced.
 
 ### CLI Commands
 

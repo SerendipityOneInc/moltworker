@@ -161,6 +161,17 @@ npm run deploy
 
 The domain must be on a zone in your Cloudflare account. The build adds it as a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (DNS record and certificate are created automatically) and disables the `workers.dev` URL. Point your Access application at this domain instead of `workers.dev`.
 
+### SSH Into the Container
+
+Set `WORKER_SSH_PUBLIC_KEY` (an `ssh-ed25519` public key) in `.env.local` and redeploy to enable SSH on the container. Connect through Wrangler, which authenticates with your Cloudflare account; no port is exposed publicly:
+
+```bash
+echo "WORKER_SSH_PUBLIC_KEY=$(cat ~/.ssh/id_ed25519.pub)" >> .env.local
+npm run deploy
+npx wrangler containers instances moltbot-sandbox-sandbox   # find the instance ID
+npx wrangler containers ssh <INSTANCE_ID>
+```
+
 Always deploy with `npm run deploy`: it rebuilds first, while a bare `wrangler deploy` reuses the last build in `dist/`.
 
 ### Local Development
