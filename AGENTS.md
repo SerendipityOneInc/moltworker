@@ -33,6 +33,7 @@ src/
 │   ├── process.ts    # Process lifecycle (find, start)
 │   ├── startup.ts    # ensureStarted: restore + start once, crash recovery
 │   ├── token-script.ts # Gateway token auto-fill for the Control UI
+│   ├── forwarded-headers.ts # Rebuild X-Forwarded-* for proxied requests
 │   ├── env.ts        # Environment variable building
 │   └── utils.ts      # Shared utilities (waitForProcess)
 ├── routes/           # API route handlers
@@ -49,13 +50,25 @@ src/
 
 ### Environment Variables
 
-- `DEV_MODE` - Skips CF Access auth AND bypasses device pairing (maps to `OPENCLAW_DEV_MODE` for container)
+- `DEV_MODE` - Skips CF Access auth (maps to `OPENCLAW_DEV_MODE` for container). OpenClaw >= 2026.9 removed `controlUi.allowInsecureAuth`, so it no longer bypasses device pairing
 - `DEBUG_ROUTES` - Enables `/debug/*` routes (disabled by default)
 - See `src/types.ts` for full `MoltbotEnv` interface
 
 ### Gateway Startup
 
 Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard.
+
+### Proxy Headers
+
+OpenClaw >= 2026.9 answers 403 `proxy_attribution_required` when a request carries forwarded headers (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`) unless it comes from a `gateway.trustedProxies` address and yields a non-loopback client IP. Cloudflare adds these headers to every request, so the Worker must pass proxied requests through `withTrustedForwardedHeaders()` (drops all client-supplied forwarded headers, sets `X-Forwarded-For` from `CF-Connecting-IP`), and `start-openclaw.sh` trusts private and loopback ranges, since only the Sandbox platform can reach the container port.
+
+### Upgrading OpenClaw
+
+Bump the version in the `Dockerfile` (check `npm view openclaw@<version> engines.node`) and redeploy. On first start with existing state, `start-openclaw.sh` runs `openclaw doctor --fix --non-interactive --yes` once per OpenClaw version (marker: `~/.openclaw/.moltworker-doctor-version`), because newer versions refuse to start until old state is migrated (2026.9 moved sessions to SQLite). The migration can take several minutes on Cloudflare, and it only persists once a snapshot is taken, so trigger "Backup Now" after the first successful start. Migrations are one-way: snapshots taken after an upgrade may not load on the old version, so keep a copy of the last pre-upgrade snapshot (e.g. under `archive/` in R2, outside the rotation) before upgrading. Test the migration locally against a downloaded snapshot on a native-arch image — `@openclaw/fs-safe` needs `openat2`, which amd64 emulation on Apple Silicon doesn't implement.
+
+### Image Generation (Workers AI plugin)
+
+`plugins/workers-ai-image/` is an OpenClaw plugin that registers image-generation provider `workers-ai` for the built-in `image_generate` tool, calling the Workers AI REST API (`/ai/run/<model>`) with the container's AI Gateway token (needs Workers AI Read). FLUX.2 models only accept multipart form data; FLUX.1 schnell and Leonardo models take JSON; responses carry base64 in `result.image`. The image copies plugins and skills to `/opt/moltworker/` (outside the restored home dir) and `start-openclaw.sh` adds them to `plugins.load.paths` / `skills.load.extraDirs`, and sets `agents.defaults.mediaModels.image.primary` (override with `IMAGE_GENERATION_MODEL`). Workers AI has no video models, so `video_generate` needs another provider. Test plugin changes with `openclaw infer image generate --json` on a native-arch container.
 
 ### Gateway Token Auto-Fill
 
@@ -174,7 +187,7 @@ For local development, create `.dev.vars`:
 
 ```bash
 ANTHROPIC_API_KEY=sk-ant-...
-DEV_MODE=true           # Skips CF Access auth + device pairing
+DEV_MODE=true           # Skips CF Access auth
 DEBUG_ROUTES=true       # Enables /debug/* routes
 ```
 
@@ -220,7 +233,7 @@ These are the env vars passed TO the container (internal names):
 | `CF_AI_GATEWAY_ACCOUNT_ID` | (env var) | Account ID for AI Gateway |
 | `CF_AI_GATEWAY_GATEWAY_ID` | (env var) | Gateway ID for AI Gateway |
 | `OPENCLAW_GATEWAY_TOKEN` | `--token` flag | Mapped from `MOLTBOT_GATEWAY_TOKEN` |
-| `OPENCLAW_DEV_MODE` | `controlUi.allowInsecureAuth` | Mapped from `DEV_MODE` |
+| `OPENCLAW_DEV_MODE` | (none) | Mapped from `DEV_MODE`; `controlUi.allowInsecureAuth` no longer exists in OpenClaw >= 2026.9 |
 | `TELEGRAM_BOT_TOKEN` | `channels.telegram.botToken` | |
 | `DISCORD_BOT_TOKEN` | `channels.discord.token` | |
 | `SLACK_BOT_TOKEN` | `channels.slack.botToken` | |

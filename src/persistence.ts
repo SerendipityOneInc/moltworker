@@ -92,10 +92,14 @@ async function unmountBackupDir(sandbox: Sandbox): Promise<void> {
 
 /**
  * Whether this container's /home/openclaw was already restored (or found
- * nothing to restore) since the container started.
+ * nothing to restore) since the container started, and is still readable.
+ * A restored directory is a FUSE overlay; if its daemon dies the mount
+ * answers ENOTCONN and must be restored again.
  */
 export async function hasRestoreMarker(sandbox: Sandbox): Promise<boolean> {
-  const result = await sandbox.exec(`test -f ${RESTORE_MARKER}`);
+  const result = await sandbox.exec(
+    `test -f ${RESTORE_MARKER} && ls ${BACKUP_DIR}/.openclaw > /dev/null`,
+  );
   return result.exitCode === 0;
 }
 

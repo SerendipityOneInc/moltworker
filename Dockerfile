@@ -1,10 +1,10 @@
 FROM docker.io/cloudflare/sandbox:0.7.20
 
-# Install Node.js 22 (required by OpenClaw)
-# The base image has Node 20, we need to replace it with Node 22
+# Install Node.js 24 (OpenClaw requires >=24.16)
+# The base image has Node 20, we need to replace it with Node 24
 # Using direct binary download for reliability
 # Note: rclone is no longer needed — persistence uses Sandbox SDK backup/restore API
-ENV NODE_VERSION=22.22.1
+ENV NODE_VERSION=24.21.0
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "${ARCH}" in \
          amd64) NODE_ARCH="x64" ;; \
@@ -22,7 +22,11 @@ RUN ARCH="$(dpkg --print-architecture)" \
 
 # Install OpenClaw
 # Pin to specific version for reproducible builds
-RUN npm install -g openclaw@2026.3.23-2 \
+# npm 11 skips dependency install scripts unless allowed; OpenClaw needs them
+# (bundled plugin setup, native modules like koffi and tree-sitter-bash)
+RUN npm install -g \
+      --allow-scripts=openclaw,@google/genai,koffi,tree-sitter-bash,protobufjs \
+      openclaw@2026.9.5 \
     && openclaw --version
 
 # Use /home/openclaw as the home directory instead of /root.
@@ -36,12 +40,15 @@ RUN mkdir -p /home/openclaw/.openclaw \
     && ln -s /home/openclaw/clawd /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-09-22-v33-startup-lock
+# Build cache bust: 2026-09-22-v37-workers-ai-images
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills
-COPY skills/ /home/openclaw/clawd/skills/
+# Custom skills and plugins live outside /home/openclaw: restoring a snapshot
+# replaces that directory, which would hide anything the image put there.
+# start-openclaw.sh points OpenClaw at these paths.
+COPY skills/ /opt/moltworker/skills/
+COPY plugins/ /opt/moltworker/plugins/
 
 # Ensure all files are readable for mksquashfs (Sandbox SDK backup).
 # OpenClaw and other tools may create restrictive config files at runtime,

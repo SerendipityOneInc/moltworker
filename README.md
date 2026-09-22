@@ -446,6 +446,8 @@ The previous `AI_GATEWAY_API_KEY` + `AI_GATEWAY_BASE_URL` approach is still supp
 | `DEV_MODE` | No | Set to `true` to skip CF Access auth + device pairing (local dev only) |
 | `DEBUG_ROUTES` | No | Set to `true` to enable `/debug/*` routes |
 | `SANDBOX_SLEEP_AFTER` | No | Container sleep timeout: `never` (default) or duration like `10m`, `1h` |
+| `IMAGE_GENERATION_MODEL` | No | Model for the `image_generate` tool, e.g. `workers-ai/@cf/black-forest-labs/flux-1-schnell`. Defaults to Workers AI FLUX.2 [klein] 9B when Cloudflare AI Gateway credentials are set |
+| `HEARTBEAT_EVERY` | No | Agent heartbeat interval, e.g. `4h` (OpenClaw default `30m`; `0m` disables). Each heartbeat is a full model call |
 | `BACKUP_INTERVAL_MINUTES` | No | Minutes between automatic snapshots (default: `15`, `0` disables) |
 | `R2_ACCESS_KEY_ID` | No | R2 access key for persistent storage |
 | `R2_SECRET_ACCESS_KEY` | No | R2 secret key for persistent storage |

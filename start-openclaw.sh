@@ -24,7 +24,10 @@ if ! flock -n 9; then
     exit 0
 fi
 
-if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
+# OpenClaw >= 2026.9 runs the gateway as a single process titled
+# "openclaw-gateway" (its command line no longer contains "openclaw gateway"),
+# so check the process name and the port.
+if pgrep -x openclaw-gateway > /dev/null 2>&1 || nc -z localhost 18789 > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
     exit 0
 fi
@@ -67,8 +70,26 @@ if [ ! -f "$CONFIG_FILE" ]; then
         --skip-health
 
     echo "Onboard completed"
+    # Fresh config from this version needs no migration
+    openclaw --version 2>/dev/null | head -1 > "$CONFIG_DIR/.moltworker-doctor-version"
 else
     echo "Using existing config"
+
+    # After an OpenClaw upgrade, state written by the old version may need
+    # migrating before the gateway will start (e.g. 2026.9 moved sessions to
+    # SQLite and refuses to start until `openclaw doctor --fix` has run).
+    # Run doctor once per version; the marker lives in the backed-up config
+    # dir so it survives restarts.
+    DOCTOR_MARKER="$CONFIG_DIR/.moltworker-doctor-version"
+    OPENCLAW_VERSION=$(openclaw --version 2>/dev/null | head -1)
+    if [ "$(cat "$DOCTOR_MARKER" 2>/dev/null)" != "$OPENCLAW_VERSION" ]; then
+        echo "Running openclaw doctor for $OPENCLAW_VERSION..."
+        if openclaw doctor --fix --non-interactive --yes; then
+            echo "$OPENCLAW_VERSION" > "$DOCTOR_MARKER"
+        else
+            echo "WARNING: openclaw doctor failed; the gateway may refuse to start"
+        fi
+    fi
 fi
 
 # ============================================================
@@ -98,7 +119,15 @@ config.channels = config.channels || {};
 // Gateway configuration
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
-config.gateway.trustedProxies = ['10.1.0.0'];
+// Requests reach the gateway from the Sandbox platform over a private
+// address (only the platform can reach the container port). The Worker
+// rebuilds X-Forwarded-For from CF-Connecting-IP (see
+// src/gateway/forwarded-headers.ts); OpenClaw >= 2026.9 rejects forwarded
+// headers from untrusted peers with 403 proxy_attribution_required.
+config.gateway.trustedProxies = [
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10',
+    '127.0.0.0/8', '::1', 'fc00::/7',
+];
 
 config.gateway.controlUi = config.gateway.controlUi || {};
 config.gateway.controlUi.allowedOrigins = ['*'];
@@ -117,9 +146,10 @@ if (process.env.OPENCLAW_GATEWAY_TOKEN) {
 config.gateway.controlUi = config.gateway.controlUi || {};
 config.gateway.controlUi.allowedOrigins = ['*'];
 
-if (process.env.OPENCLAW_DEV_MODE === 'true') {
-    config.gateway.controlUi = config.gateway.controlUi || {};
-    config.gateway.controlUi.allowInsecureAuth = true;
+// controlUi.allowInsecureAuth was removed in OpenClaw 2026.9 (strict schema);
+// drop it from configs written by older versions.
+if (config.gateway.controlUi) {
+    delete config.gateway.controlUi.allowInsecureAuth;
 }
 
 // Legacy AI Gateway base URL override:
@@ -172,6 +202,54 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     }
 }
 
+// Agent heartbeat interval (e.g. "4h"; "0m" disables). Each heartbeat is a
+// full model call with the agent's system prompt, so the 30m default adds up.
+if (process.env.HEARTBEAT_EVERY) {
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.heartbeat = {
+        ...(config.agents.defaults.heartbeat || {}),
+        every: process.env.HEARTBEAT_EVERY,
+    };
+    console.log('Heartbeat interval: ' + process.env.HEARTBEAT_EVERY);
+}
+
+// Skills and plugins shipped in the image (outside the backed-up home dir,
+// so image updates aren't hidden by restored snapshots)
+function addUnique(list, value) {
+    const items = Array.isArray(list) ? list : [];
+    return items.includes(value) ? items : [...items, value];
+}
+config.skills = config.skills || {};
+config.skills.load = config.skills.load || {};
+config.skills.load.extraDirs = addUnique(config.skills.load.extraDirs, '/opt/moltworker/skills');
+config.plugins = config.plugins || {};
+config.plugins.load = config.plugins.load || {};
+config.plugins.load.paths = addUnique(
+    config.plugins.load.paths, '/opt/moltworker/plugins/workers-ai-image');
+
+// Image generation model for the image_generate tool. IMAGE_GENERATION_MODEL
+// overrides; otherwise default to Workers AI (plugins/workers-ai-image) when
+// Cloudflare credentials are available and nothing else is configured.
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+const mediaModels = config.agents.defaults.mediaModels || {};
+const hasWorkersAiCredentials = Boolean(
+    (process.env.WORKERS_AI_API_TOKEN || process.env.CLOUDFLARE_AI_GATEWAY_API_KEY) &&
+    (process.env.WORKERS_AI_ACCOUNT_ID || process.env.CF_AI_GATEWAY_ACCOUNT_ID ||
+        process.env.CLOUDFLARE_ACCOUNT_ID));
+const imageModel = process.env.IMAGE_GENERATION_MODEL ||
+    (!mediaModels.image?.primary && hasWorkersAiCredentials
+        ? 'workers-ai/@cf/black-forest-labs/flux-2-klein-9b'
+        : null);
+if (imageModel) {
+    config.agents.defaults.mediaModels = {
+        ...mediaModels,
+        image: { timeoutMs: 120000, ...(mediaModels.image || {}), primary: imageModel },
+    };
+    console.log('Image generation model: ' + imageModel);
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)
@@ -190,18 +268,18 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
 }
 
 // Discord configuration
-// Discord uses a nested dm object: dm.policy, dm.allowFrom (per DiscordDmConfig)
+// OpenClaw 2026.9 rejects dm.policy / dm.allowFrom; use top-level dmPolicy /
+// allowFrom (also accepted by older versions)
 if (process.env.DISCORD_BOT_TOKEN) {
     const dmPolicy = process.env.DISCORD_DM_POLICY || 'pairing';
-    const dm = { policy: dmPolicy };
-    if (dmPolicy === 'open') {
-        dm.allowFrom = ['*'];
-    }
     config.channels.discord = {
         token: process.env.DISCORD_BOT_TOKEN,
         enabled: true,
-        dm: dm,
+        dmPolicy: dmPolicy,
     };
+    if (dmPolicy === 'open') {
+        config.channels.discord.allowFrom = ['*'];
+    }
 }
 
 // Slack configuration

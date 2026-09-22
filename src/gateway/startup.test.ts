@@ -50,7 +50,7 @@ function createFakeContainer(initial: Partial<FakeContainer['state']> = {}): Fak
       if (cmd.startsWith('nc -z')) {
         return createMockExecResult('', { exitCode: state.portOpen ? 0 : 1 });
       }
-      if (cmd === `test -f ${RESTORE_MARKER}`) {
+      if (cmd.startsWith(`test -f ${RESTORE_MARKER}`)) {
         return createMockExecResult('', { exitCode: state.marker ? 0 : 1 });
       }
       if (cmd.includes(RESTORE_MARKER)) {

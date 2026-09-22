@@ -11,6 +11,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 # CF_AI_GATEWAY_GATEWAY_ID=your-gateway-id
 # CF_AI_GATEWAY_MODEL=workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
 
+# Agent heartbeat interval (OpenClaw default: 30m, 0m disables). Each heartbeat
+# is a full model call, so a longer interval saves tokens.
+# HEARTBEAT_EVERY=4h
+
+# Image generation model for the image_generate tool (default: Workers AI
+# FLUX.2 [klein] 9B via plugins/workers-ai-image when AI Gateway credentials are set)
+# IMAGE_GENERATION_MODEL=workers-ai/@cf/black-forest-labs/flux-1-schnell
+
 # Legacy AI Gateway (still supported)
 # AI_GATEWAY_API_KEY=your-key
 # AI_GATEWAY_BASE_URL=https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic

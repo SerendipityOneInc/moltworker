@@ -50,6 +50,8 @@ export function buildEnvVars(env: OpenClawEnv): Record<string, string> {
   if (env.SLACK_APP_TOKEN) envVars.SLACK_APP_TOKEN = env.SLACK_APP_TOKEN;
   if (env.CF_AI_GATEWAY_MODEL) envVars.CF_AI_GATEWAY_MODEL = env.CF_AI_GATEWAY_MODEL;
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
+  if (env.HEARTBEAT_EVERY) envVars.HEARTBEAT_EVERY = env.HEARTBEAT_EVERY;
+  if (env.IMAGE_GENERATION_MODEL) envVars.IMAGE_GENERATION_MODEL = env.IMAGE_GENERATION_MODEL;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
 
   // Note: R2 credentials are no longer passed to the container.

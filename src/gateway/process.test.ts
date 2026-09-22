@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { findExistingGatewayProcess, isGatewayPortOpen } from './process';
+import { findExistingGatewayProcess, isGatewayPortOpen, killGateway } from './process';
 import type { Sandbox, Process } from '@cloudflare/sandbox';
 import { createMockSandbox, createMockExecResult } from '../test-utils';
 
@@ -180,5 +180,28 @@ describe('isGatewayPortOpen', () => {
     execMock.mockRejectedValue(new Error('container not ready'));
 
     await expect(isGatewayPortOpen(sandbox)).rejects.toThrow('container not ready');
+  });
+});
+
+describe('killGateway', () => {
+  it('never pattern-matches a bare "openclaw", which would kill the FUSE overlay daemon', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sandbox, execMock } = createMockSandbox();
+
+      const done = killGateway(sandbox);
+      await vi.runAllTimersAsync();
+      await done;
+
+      const commands = execMock.mock.calls.map((call) => call[0] as string).join('\n');
+      expect(commands).toContain('pgrep -x "openclaw-gateway"');
+      expect(commands).not.toMatch(/pkill[^;\n]*-f "openclaw"/);
+      // A pattern that matches the overlay's arguments (/home/openclaw ...)
+      const overlayArgs = 'fuse-overlayfs -o lowerdir=/var/backups/mounts/x/lower /home/openclaw';
+      const pattern = /pkill -9 -f "([^"]+)"/.exec(commands)?.[1] ?? '';
+      expect(new RegExp(pattern).test(overlayArgs)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

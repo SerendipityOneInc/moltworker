@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-workers-ai-image",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenClaw image generation provider for Cloudflare Workers AI",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.js"]
+  }
+}
