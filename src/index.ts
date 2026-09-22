@@ -35,6 +35,7 @@ import {
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { Sandbox } from './sandbox';
+import { withTrustedForwardedHeaders } from './gateway/forwarded-headers';
 import { handleScheduled } from './cron/handler';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
@@ -329,11 +330,11 @@ app.all('*', async (c) => {
     // Inject gateway token into WebSocket request if not already present.
     // CF Access redirects strip query params, so authenticated users lose ?token=.
     // Since the user already passed CF Access auth, we inject the token server-side.
-    let wsRequest = request;
+    let wsRequest = withTrustedForwardedHeaders(request);
     if (c.env.MOLTBOT_GATEWAY_TOKEN && !url.searchParams.has('token')) {
       const tokenUrl = new URL(url.toString());
       tokenUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
-      wsRequest = new Request(tokenUrl.toString(), request);
+      wsRequest = new Request(tokenUrl.toString(), wsRequest);
     }
 
     // Get WebSocket connection to the container (with retry on crash)
@@ -484,15 +485,16 @@ app.all('*', async (c) => {
 
   console.log('[HTTP] Proxying:', url.pathname + url.search);
 
+  const proxiedRequest = withTrustedForwardedHeaders(request);
   let httpResponse: Response;
   try {
-    httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+    httpResponse = await sandbox.containerFetch(proxiedRequest, GATEWAY_PORT);
   } catch (err) {
     if (isGatewayCrashedError(err)) {
       console.log('[HTTP] Gateway crashed, attempting restart and retry...');
       try {
         await sandbox.ensureStarted({ recover: true });
-        httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
+        httpResponse = await sandbox.containerFetch(proxiedRequest, GATEWAY_PORT);
       } catch (retryErr) {
         console.error('[HTTP] Retry after restart also failed:', retryErr);
         if (acceptsHtml) return c.html(loadingPageHtml);
@@ -517,6 +519,15 @@ app.all('*', async (c) => {
   // HTTP handler hasn't fully initialized. Show the loading page instead
   // of a blank page that the user would be stuck on forever.
   if (acceptsHtml) {
+    // The sandbox answers 5xx (e.g. "container is not listening") while the
+    // gateway process exists but hasn't opened its port yet, such as during
+    // a post-upgrade migration. Keep the user on the loading page.
+    if (httpResponse.status >= 500) {
+      console.log(
+        `[HTTP] Gateway returned ${httpResponse.status} for HTML request, serving loading page`,
+      );
+      return c.html(loadingPageHtml);
+    }
     const body = await httpResponse.text();
     if (!body || body.length < 50) {
       console.log(
