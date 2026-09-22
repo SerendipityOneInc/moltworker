@@ -1,8 +1,7 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { GATEWAY_PORT } from '../config';
-import { findExistingGatewayProcess, ensureGateway } from '../gateway';
-import { restoreIfNeeded } from '../persistence';
+import { findExistingGatewayProcess } from '../gateway';
 
 /**
  * Public routes - NO Cloudflare Access authentication required
@@ -39,32 +38,20 @@ publicRoutes.get('/api/status', async (c) => {
     let process = await findExistingGatewayProcess(sandbox);
     console.log('[api/status] existing process:', process?.id ?? 'none', process?.status ?? '');
     if (!process) {
-      // Restore synchronously — restoreBackup is a fast RPC call (~1-3s).
-      // This MUST happen before ensureGateway or the gateway starts without
-      // the FUSE overlay.
-      let restoreError: string | null = null;
-      try {
-        await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-      } catch (err) {
-        restoreError = err instanceof Error ? err.message : String(err);
-        console.error('[api/status] Restore failed:', restoreError);
-      }
-
-      // Start the gateway but DON'T wait for it to be ready.
-      // ensureGateway with waitForReady:false just starts the process
-      // (fast RPC, ~2-5s) without blocking on waitForPort (which takes
-      // up to 180s and would exceed the 30s Worker CPU limit).
-      // The loading page polls every 2s — subsequent polls will find
-      // the process and check if the port is up.
+      // Start the gateway but DON'T wait for it to be ready: waiting for the
+      // port can take minutes. ensureStarted restores state first and runs
+      // at most one startup even if several requests race here (e.g. this
+      // poll and the page's favicon request). The loading page polls every
+      // 2s — later polls find the process and check whether the port is up.
       console.log('[api/status] No process found, starting gateway...');
       try {
-        await ensureGateway(sandbox, c.env, { waitForReady: false });
+        await sandbox.ensureStarted({ waitForReady: false });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[api/status] Gateway start failed:', msg);
-        return c.json({ ok: false, status: 'start_failed', error: msg, restoreError });
+        return c.json({ ok: false, status: 'start_failed', error: msg });
       }
-      return c.json({ ok: false, status: 'starting', restoreError });
+      return c.json({ ok: false, status: 'starting' });
     }
 
     // Process exists, check if it's actually responding

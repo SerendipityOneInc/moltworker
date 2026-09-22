@@ -21,15 +21,20 @@
  */
 
 import { Hono } from 'hono';
-import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
+import { getSandbox, type SandboxOptions } from '@cloudflare/sandbox';
 
 import type { AppEnv, OpenClawEnv } from './types';
 import { GATEWAY_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureGateway, findExistingGatewayProcess, killGateway } from './gateway';
+import {
+  findExistingGatewayProcess,
+  buildGatewayTokenScript,
+  injectGatewayTokenScript,
+  GATEWAY_TOKEN_SCRIPT_PATH,
+} from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
-import { restoreIfNeeded, createSnapshot } from './persistence';
+import { Sandbox } from './sandbox';
 import { handleScheduled } from './cron/handler';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
@@ -58,8 +63,6 @@ function isGatewayCrashedError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   return error.message.includes('is not listening');
 }
-
-// killGateway is imported from './gateway' (shared with restart handler)
 
 export { Sandbox };
 
@@ -149,7 +152,7 @@ app.use('*', async (c, next) => {
 // Middleware: Initialize sandbox stub and restore backup if available.
 // Note: we intentionally do NOT call sandbox.start() here. The Sandbox SDK's
 // containerFetch() auto-starts the container when needed, and the catch-all
-// proxy route uses ensureGateway() which handles startup explicitly.
+// proxy route uses sandbox.ensureStarted() which handles startup explicitly.
 // Adding start() here would add an unnecessary RPC call on every request,
 // including static assets and health checks that don't need the container.
 app.use('*', async (c, next) => {
@@ -157,11 +160,10 @@ app.use('*', async (c, next) => {
   const sandbox = getSandbox(c.env.Sandbox, 'openclaw', options);
   c.set('sandbox', sandbox);
 
-  // NOTE: restoreIfNeeded is NOT called here in the global middleware.
-  // It's called only from the catch-all route (gateway proxy) and /api/status.
-  // Calling it on admin routes (sync, debug/cli) would mount a FUSE overlay
-  // that interferes with createBackup — the SDK resets the overlay on backup,
-  // wiping any upper-layer writes made since the last restore.
+  // NOTE: restore happens only inside sandbox.ensureStarted(), right before
+  // a gateway is started. restoreBackup unmounts and remounts
+  // /home/openclaw, so running it anywhere else could pull
+  // the directory out from under a running gateway.
 
   await next();
 });
@@ -248,6 +250,19 @@ app.use('/debug/*', async (c, next) => {
 });
 app.route('/debug', debug);
 
+// Serves the gateway token to the Control UI (see gateway/token-script.ts).
+// Protected by Cloudflare Access like the other routes above.
+app.get(GATEWAY_TOKEN_SCRIPT_PATH, (c) => {
+  const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+  if (!token) {
+    return c.notFound();
+  }
+  return c.body(buildGatewayTokenScript(token), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+});
+
 // =============================================================================
 // CATCH-ALL: Proxy to OpenClaw gateway
 // =============================================================================
@@ -285,15 +300,11 @@ app.all('*', async (c) => {
   }
 
   // For non-WebSocket, non-HTML requests (API calls, static assets), we need
-  // the gateway to be running. Restore first, then start.
+  // the gateway to be running. ensureStarted restores state and starts it
+  // once, however many requests arrive together.
   if (!isWebSocketRequest && !acceptsHtml) {
     try {
-      await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-    } catch {
-      // non-fatal
-    }
-    try {
-      await ensureGateway(sandbox, c.env);
+      await sandbox.ensureStarted();
     } catch (error) {
       console.error('[PROXY] Failed to start gateway:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -331,15 +342,9 @@ app.all('*', async (c) => {
       containerResponse = await sandbox.wsConnect(wsRequest, GATEWAY_PORT);
     } catch (err) {
       if (isGatewayCrashedError(err)) {
-        console.log('[WS] Gateway crashed, attempting restore + restart and retry...');
-        await killGateway(sandbox);
+        console.log('[WS] Gateway crashed, attempting restart and retry...');
         try {
-          await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-        } catch {
-          // non-fatal
-        }
-        await ensureGateway(sandbox, c.env);
-        try {
+          await sandbox.ensureStarted({ recover: true });
           containerResponse = await sandbox.wsConnect(wsRequest, GATEWAY_PORT);
         } catch (retryErr) {
           console.error('[WS] Retry after restart also failed:', retryErr);
@@ -484,15 +489,9 @@ app.all('*', async (c) => {
     httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
   } catch (err) {
     if (isGatewayCrashedError(err)) {
-      console.log('[HTTP] Gateway crashed, attempting restore + restart and retry...');
-      await killGateway(sandbox);
+      console.log('[HTTP] Gateway crashed, attempting restart and retry...');
       try {
-        await restoreIfNeeded(sandbox, c.env.BACKUP_BUCKET);
-      } catch {
-        // non-fatal
-      }
-      await ensureGateway(sandbox, c.env);
-      try {
+        await sandbox.ensureStarted({ recover: true });
         httpResponse = await sandbox.containerFetch(request, GATEWAY_PORT);
       } catch (retryErr) {
         console.error('[HTTP] Retry after restart also failed:', retryErr);
@@ -528,7 +527,15 @@ app.all('*', async (c) => {
     const newHeaders = new Headers(httpResponse.headers);
     newHeaders.set('X-Worker-Debug', 'proxy-to-gateway');
     newHeaders.set('X-Debug-Path', url.pathname);
-    return new Response(body, {
+    const isHtml = newHeaders.get('Content-Type')?.includes('text/html');
+    let html = body;
+    if (isHtml && c.env.MOLTBOT_GATEWAY_TOKEN) {
+      html = injectGatewayTokenScript(body);
+      // The body changed, so the gateway's length and validator no longer apply
+      newHeaders.delete('Content-Length');
+      newHeaders.delete('ETag');
+    }
+    return new Response(html, {
       status: httpResponse.status,
       statusText: httpResponse.statusText,
       headers: newHeaders,

@@ -101,9 +101,12 @@
   // - CDP_SECRET: Shared secret for /cdp endpoint authentication
   // - WORKER_URL: Public URL of the worker
   //
-  // R2 persistent storage (for data persistence across container restarts):
+  // R2 persistent storage (all four required by the Sandbox SDK backup API):
   // - R2_ACCESS_KEY_ID: R2 access key ID (from R2 API tokens)
   // - R2_SECRET_ACCESS_KEY: R2 secret access key (from R2 API tokens)
   // - CLOUDFLARE_ACCOUNT_ID: Your Cloudflare account ID
-  // - BACKUP_BUCKET_NAME: R2 bucket name (default: moltbot-data)
+  // - BACKUP_BUCKET_NAME: R2 bucket name, must match bucket_name above (moltbot-data)
+  //
+  // Automatic backups (optional, only when SANDBOX_SLEEP_AFTER is 'never'):
+  // - BACKUP_INTERVAL_MINUTES: Minutes between snapshots (default: 15, 0 disables)
 }
