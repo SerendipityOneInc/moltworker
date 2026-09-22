@@ -26,10 +26,17 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, OpenClawEnv } from './types';
 import { GATEWAY_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureGateway, findExistingGatewayProcess, killGateway } from './gateway';
+import {
+  ensureGateway,
+  findExistingGatewayProcess,
+  killGateway,
+  buildGatewayTokenScript,
+  injectGatewayTokenScript,
+  GATEWAY_TOKEN_SCRIPT_PATH,
+} from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
-import { restoreIfNeeded, createSnapshot } from './persistence';
+import { restoreIfNeeded } from './persistence';
 import { handleScheduled } from './cron/handler';
 import loadingPageHtml from './assets/loading.html';
 import configErrorHtml from './assets/config-error.html';
@@ -158,10 +165,10 @@ app.use('*', async (c, next) => {
   c.set('sandbox', sandbox);
 
   // NOTE: restoreIfNeeded is NOT called here in the global middleware.
-  // It's called only from the catch-all route (gateway proxy) and /api/status.
-  // Calling it on admin routes (sync, debug/cli) would mount a FUSE overlay
-  // that interferes with createBackup — the SDK resets the overlay on backup,
-  // wiping any upper-layer writes made since the last restore.
+  // It's called only from the catch-all route (gateway proxy) and /api/status,
+  // before the gateway is started. restoreBackup unmounts and remounts
+  // /home/openclaw, so running it on admin routes (sync, debug/cli) could pull
+  // the directory out from under a running gateway.
 
   await next();
 });
@@ -247,6 +254,19 @@ app.use('/debug/*', async (c, next) => {
   return next();
 });
 app.route('/debug', debug);
+
+// Serves the gateway token to the Control UI (see gateway/token-script.ts).
+// Protected by Cloudflare Access like the other routes above.
+app.get(GATEWAY_TOKEN_SCRIPT_PATH, (c) => {
+  const token = c.env.MOLTBOT_GATEWAY_TOKEN;
+  if (!token) {
+    return c.notFound();
+  }
+  return c.body(buildGatewayTokenScript(token), 200, {
+    'Content-Type': 'application/javascript; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+});
 
 // =============================================================================
 // CATCH-ALL: Proxy to OpenClaw gateway
@@ -528,7 +548,15 @@ app.all('*', async (c) => {
     const newHeaders = new Headers(httpResponse.headers);
     newHeaders.set('X-Worker-Debug', 'proxy-to-gateway');
     newHeaders.set('X-Debug-Path', url.pathname);
-    return new Response(body, {
+    const isHtml = newHeaders.get('Content-Type')?.includes('text/html');
+    let html = body;
+    if (isHtml && c.env.MOLTBOT_GATEWAY_TOKEN) {
+      html = injectGatewayTokenScript(body);
+      // The body changed, so the gateway's length and validator no longer apply
+      newHeaders.delete('Content-Length');
+      newHeaders.delete('ETag');
+    }
+    return new Response(html, {
       status: httpResponse.status,
       statusText: httpResponse.statusText,
       headers: newHeaders,
