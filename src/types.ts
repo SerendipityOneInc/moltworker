@@ -45,6 +45,9 @@ export interface OpenClawEnv {
 
   // Cron wake-ahead: wake container before OpenClaw cron jobs fire
   CRON_WAKE_AHEAD_MINUTES?: string; // Minutes before a cron job to wake the container (default: 10)
+
+  // Automatic backups (only when SANDBOX_SLEEP_AFTER is 'never')
+  BACKUP_INTERVAL_MINUTES?: string; // Minutes between snapshots (default: 15, 0 disables)
 }
 
 /**

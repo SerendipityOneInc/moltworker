@@ -2,7 +2,13 @@ import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
 import { ensureGateway, findExistingGatewayProcess, killGateway, waitForProcess } from '../gateway';
-import { createSnapshot, getLastBackupId, signalRestoreNeeded } from '../persistence';
+import {
+  createSnapshot,
+  getSnapshotHandles,
+  isSafeToBackup,
+  signalRestoreNeeded,
+} from '../persistence';
+import { getBackupState, getSnapshotIntervalMs } from '../cron/backup';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
 const CLI_TIMEOUT_MS = 20000;
@@ -192,23 +198,32 @@ adminApi.post('/devices/approve-all', async (c) => {
 
 // GET /api/admin/storage - Get backup/restore status
 adminApi.get('/storage', async (c) => {
-  const hasCredentials = !!(
-    c.env.R2_ACCESS_KEY_ID &&
-    c.env.R2_SECRET_ACCESS_KEY &&
-    c.env.CLOUDFLARE_ACCOUNT_ID
-  );
-
+  // The Sandbox SDK needs all four to create presigned R2 URLs for backups
   const missing: string[] = [];
   if (!c.env.R2_ACCESS_KEY_ID) missing.push('R2_ACCESS_KEY_ID');
   if (!c.env.R2_SECRET_ACCESS_KEY) missing.push('R2_SECRET_ACCESS_KEY');
   if (!c.env.CLOUDFLARE_ACCOUNT_ID) missing.push('CLOUDFLARE_ACCOUNT_ID');
+  if (!c.env.BACKUP_BUCKET_NAME) missing.push('BACKUP_BUCKET_NAME');
+  const hasCredentials = missing.length === 0;
 
-  const lastBackupId = hasCredentials ? await getLastBackupId(c.env.BACKUP_BUCKET) : null;
+  const bucket = c.env.BACKUP_BUCKET;
+  const [snapshots, backupState] = await Promise.all([
+    getSnapshotHandles(bucket),
+    getBackupState(bucket),
+  ]);
+  const sleepAfter = c.env.SANDBOX_SLEEP_AFTER?.toLowerCase() || 'never';
 
   return c.json({
     configured: hasCredentials,
     missing: missing.length > 0 ? missing : undefined,
-    lastBackupId,
+    lastSync: snapshots[0]?.createdAt ?? null,
+    lastBackupId: snapshots[0]?.id ?? null,
+    snapshots,
+    autoBackup: {
+      enabled: sleepAfter === 'never',
+      intervalMinutes: getSnapshotIntervalMs(c.env) / 60_000,
+      ...backupState,
+    },
     message: hasCredentials
       ? 'R2 storage is configured. Your data will persist across container restarts via SDK snapshots.'
       : 'R2 storage is not configured. Paired devices and conversations will be lost when the container restarts.',
@@ -216,27 +231,29 @@ adminApi.get('/storage', async (c) => {
 });
 
 // POST /api/admin/storage/sync - Create a new snapshot
+// Pass ?force=true to back up even if the container state wasn't restored
+// from a backup (e.g. to deliberately save a fresh install).
 adminApi.post('/storage/sync', async (c) => {
   const sandbox = c.get('sandbox');
+  const force = c.req.query('force') === 'true';
 
   try {
-    // Log mount state before backup for diagnostics
-    let mountState = 'unknown';
-    let dirContents = 'unknown';
-    try {
-      const mnt = await sandbox.exec('mount | grep openclaw || echo "NO_OVERLAY"');
-      mountState = mnt.stdout?.trim() ?? 'empty';
-      const ls = await sandbox.exec('ls /home/openclaw/clawd/ 2>&1 || echo "(empty)"');
-      dirContents = ls.stdout?.trim() ?? 'empty';
-    } catch {
-      // non-fatal
+    if (!force && !(await isSafeToBackup(sandbox))) {
+      return c.json(
+        {
+          success: false,
+          error:
+            'Container state was not restored from a backup in this container lifetime, so backing it up could overwrite good data. Load the gateway first, or retry with ?force=true.',
+        },
+        409,
+      );
     }
     const handle = await createSnapshot(sandbox, c.env.BACKUP_BUCKET);
     return c.json({
       success: true,
       message: 'Snapshot created successfully',
       backupId: handle.id,
-      debug: { mountState, dirContents },
+      lastSync: handle.createdAt,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -257,6 +274,17 @@ adminApi.post('/gateway/restart', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
+    // Snapshot first so the restart (which re-restores from R2) doesn't roll
+    // back changes made since the last scheduled backup.
+    let snapshotId: string | undefined;
+    try {
+      if (await isSafeToBackup(sandbox)) {
+        snapshotId = (await createSnapshot(sandbox, c.env.BACKUP_BUCKET)).id;
+      }
+    } catch (err) {
+      console.error('[Restart] Pre-restart snapshot failed, continuing:', err);
+    }
+
     // Kill the gateway process (shared logic with crash retry)
     const existingProcess = await findExistingGatewayProcess(sandbox);
     console.log('[Restart] Killing gateway, existing process:', existingProcess?.id ?? 'none');
@@ -274,6 +302,7 @@ adminApi.post('/gateway/restart', async (c) => {
         ? 'Gateway process killed, will restart on next request'
         : 'No existing process found, will start on next request',
       previousProcessId: existingProcess?.id,
+      snapshotId,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

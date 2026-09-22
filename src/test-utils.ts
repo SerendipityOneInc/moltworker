@@ -19,6 +19,7 @@ export function createMockEnvWithR2(overrides: Partial<OpenClawEnv> = {}): OpenC
     R2_ACCESS_KEY_ID: 'test-key-id',
     R2_SECRET_ACCESS_KEY: 'test-secret-key',
     CLOUDFLARE_ACCOUNT_ID: 'test-account-id',
+    BACKUP_BUCKET_NAME: 'moltbot-data',
     ...overrides,
   });
 }
@@ -93,4 +94,69 @@ export function suppressConsole() {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+}
+
+interface StoredObject {
+  body: Uint8Array;
+  uploaded: Date;
+}
+
+/**
+ * Minimal in-memory R2Bucket supporting get/head/put/delete/list.
+ * `objects` is exposed so tests can seed or inspect contents directly.
+ */
+function toMockR2Object(key: string, stored: StoredObject) {
+  return {
+    key,
+    size: stored.body.byteLength,
+    uploaded: stored.uploaded,
+    text: async () => new TextDecoder().decode(stored.body),
+    json: async () => JSON.parse(new TextDecoder().decode(stored.body)),
+    arrayBuffer: async () => stored.body.slice().buffer,
+  };
+}
+
+export function createMockBucket(now: () => Date = () => new Date()) {
+  const objects = new Map<string, StoredObject>();
+  const toObject = toMockR2Object;
+
+  const bucket = {
+    get: vi.fn(async (key: string) => {
+      const stored = objects.get(key);
+      return stored ? toObject(key, stored) : null;
+    }),
+    head: vi.fn(async (key: string) => {
+      const stored = objects.get(key);
+      return stored ? toObject(key, stored) : null;
+    }),
+    put: vi.fn(async (key: string, value: string | ArrayBuffer | Uint8Array) => {
+      const body =
+        typeof value === 'string'
+          ? new TextEncoder().encode(value)
+          : new Uint8Array(value instanceof Uint8Array ? value : new Uint8Array(value));
+      objects.set(key, { body, uploaded: now() });
+      return toObject(key, objects.get(key)!);
+    }),
+    delete: vi.fn(async (keys: string | string[]) => {
+      for (const key of Array.isArray(keys) ? keys : [keys]) objects.delete(key);
+    }),
+    list: vi.fn(async (options: { prefix?: string } = {}) => ({
+      objects: [...objects.entries()]
+        .filter(([key]) => key.startsWith(options.prefix ?? ''))
+        .map(([key, stored]) => toObject(key, stored)),
+      truncated: false,
+    })),
+  };
+
+  return { bucket: bucket as unknown as R2Bucket, objects, mocks: bucket };
+}
+
+/** Store a JSON value directly in a mock bucket's contents */
+export function seedJson(
+  objects: Map<string, StoredObject>,
+  key: string,
+  value: unknown,
+  uploaded: Date = new Date(),
+) {
+  objects.set(key, { body: new TextEncoder().encode(JSON.stringify(value)), uploaded });
 }
