@@ -153,6 +153,11 @@ describe('buildEnvVars', () => {
     });
   });
 
+  it('passes IMAGE_GENERATION_MODEL when set', () => {
+    const env = createMockEnv({ IMAGE_GENERATION_MODEL: 'workers-ai/@cf/model' });
+    expect(buildEnvVars(env).IMAGE_GENERATION_MODEL).toBe('workers-ai/@cf/model');
+  });
+
   it('passes HEARTBEAT_EVERY when set', () => {
     const env = createMockEnv({ HEARTBEAT_EVERY: '4h' });
     expect(buildEnvVars(env).HEARTBEAT_EVERY).toBe('4h');

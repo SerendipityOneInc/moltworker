@@ -214,6 +214,42 @@ if (process.env.HEARTBEAT_EVERY) {
     console.log('Heartbeat interval: ' + process.env.HEARTBEAT_EVERY);
 }
 
+// Skills and plugins shipped in the image (outside the backed-up home dir,
+// so image updates aren't hidden by restored snapshots)
+function addUnique(list, value) {
+    const items = Array.isArray(list) ? list : [];
+    return items.includes(value) ? items : [...items, value];
+}
+config.skills = config.skills || {};
+config.skills.load = config.skills.load || {};
+config.skills.load.extraDirs = addUnique(config.skills.load.extraDirs, '/opt/moltworker/skills');
+config.plugins = config.plugins || {};
+config.plugins.load = config.plugins.load || {};
+config.plugins.load.paths = addUnique(
+    config.plugins.load.paths, '/opt/moltworker/plugins/workers-ai-image');
+
+// Image generation model for the image_generate tool. IMAGE_GENERATION_MODEL
+// overrides; otherwise default to Workers AI (plugins/workers-ai-image) when
+// Cloudflare credentials are available and nothing else is configured.
+config.agents = config.agents || {};
+config.agents.defaults = config.agents.defaults || {};
+const mediaModels = config.agents.defaults.mediaModels || {};
+const hasWorkersAiCredentials = Boolean(
+    (process.env.WORKERS_AI_API_TOKEN || process.env.CLOUDFLARE_AI_GATEWAY_API_KEY) &&
+    (process.env.WORKERS_AI_ACCOUNT_ID || process.env.CF_AI_GATEWAY_ACCOUNT_ID ||
+        process.env.CLOUDFLARE_ACCOUNT_ID));
+const imageModel = process.env.IMAGE_GENERATION_MODEL ||
+    (!mediaModels.image?.primary && hasWorkersAiCredentials
+        ? 'workers-ai/@cf/black-forest-labs/flux-2-klein-9b'
+        : null);
+if (imageModel) {
+    config.agents.defaults.mediaModels = {
+        ...mediaModels,
+        image: { timeoutMs: 120000, ...(mediaModels.image || {}), primary: imageModel },
+    };
+    console.log('Image generation model: ' + imageModel);
+}
+
 // Telegram configuration
 // Overwrite entire channel object to drop stale keys from old R2 backups
 // that would fail OpenClaw's strict config validation (see #47)

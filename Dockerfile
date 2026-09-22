@@ -40,12 +40,15 @@ RUN mkdir -p /home/openclaw/.openclaw \
     && ln -s /home/openclaw/clawd /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-09-22-v36-trusted-proxies
+# Build cache bust: 2026-09-22-v37-workers-ai-images
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills
-COPY skills/ /home/openclaw/clawd/skills/
+# Custom skills and plugins live outside /home/openclaw: restoring a snapshot
+# replaces that directory, which would hide anything the image put there.
+# start-openclaw.sh points OpenClaw at these paths.
+COPY skills/ /opt/moltworker/skills/
+COPY plugins/ /opt/moltworker/plugins/
 
 # Ensure all files are readable for mksquashfs (Sandbox SDK backup).
 # OpenClaw and other tools may create restrictive config files at runtime,

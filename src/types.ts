@@ -11,6 +11,7 @@ export interface OpenClawEnv {
   CF_AI_GATEWAY_ACCOUNT_ID?: string; // Cloudflare account ID for AI Gateway
   CF_AI_GATEWAY_GATEWAY_ID?: string; // AI Gateway ID
   CLOUDFLARE_AI_GATEWAY_API_KEY?: string; // API key for requests through the gateway
+  IMAGE_GENERATION_MODEL?: string; // image_generate model ref, e.g. 'workers-ai/@cf/black-forest-labs/flux-1-schnell'
   HEARTBEAT_EVERY?: string; // Agent heartbeat interval, e.g. '4h' ('0m' disables); OpenClaw default is 30m
   CF_AI_GATEWAY_MODEL?: string; // Override model: "provider/model-id" e.g. "workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
   // Legacy AI Gateway configuration (still supported for backward compat)

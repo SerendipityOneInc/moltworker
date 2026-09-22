@@ -1,0 +1,18 @@
+{
+  "id": "workers-ai-image",
+  "name": "Workers AI Images",
+  "description": "Image generation with Cloudflare Workers AI models (FLUX and others) for the image_generate tool",
+  "categories": ["media"],
+  "activation": {
+    "onStartup": false
+  },
+  "enabledByDefault": true,
+  "contracts": {
+    "imageGenerationProviders": ["workers-ai"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
