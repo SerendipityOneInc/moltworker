@@ -25,7 +25,6 @@ const BACKUP_TTL_SECONDS = 90 * 24 * 60 * 60;
 const HANDLES_KEY = 'backup-handles.json';
 /** Single newest handle, kept for compatibility with older Worker versions */
 const LEGACY_HANDLE_KEY = 'backup-handle.json';
-const RESTORE_NEEDED_KEY = 'restore-needed';
 
 export const MAX_SNAPSHOTS = 3;
 
@@ -36,24 +35,6 @@ export interface SnapshotHandle {
   dir: string;
   /** ISO timestamp */
   createdAt: string;
-}
-
-// Per-isolate flag for fast path (avoid R2 read on every request)
-let restored = false;
-
-/**
- * Signal that a restore is needed (e.g. after gateway restart).
- * Writes a marker to R2 so ALL Worker isolates will re-restore,
- * not just the one that handled the restart request.
- */
-export async function signalRestoreNeeded(bucket: R2Bucket): Promise<void> {
-  restored = false;
-  await bucket.put(RESTORE_NEEDED_KEY, '1');
-}
-
-// Backward compat alias
-export function clearPersistenceCache(): void {
-  restored = false;
 }
 
 /**
@@ -110,30 +91,32 @@ async function unmountBackupDir(sandbox: Sandbox): Promise<void> {
 }
 
 /**
- * Restore the most recent usable backup if it hasn't been restored yet.
+ * Whether this container's /home/openclaw was already restored (or found
+ * nothing to restore) since the container started.
+ */
+export async function hasRestoreMarker(sandbox: Sandbox): Promise<boolean> {
+  const result = await sandbox.exec(`test -f ${RESTORE_MARKER}`);
+  return result.exitCode === 0;
+}
+
+/**
+ * Restore the most recent usable backup unless this container already has.
  *
  * Tries snapshots newest-first, dropping any that have expired or been
  * deleted. Transient restore errors are rethrown without trying older
  * snapshots, so a temporary failure never silently rolls state back.
  *
- * Must only be called from the catch-all route (gateway proxy) and
- * /api/status, before the gateway is started: restoreBackup replaces the
- * directory with an overlay mount, which would pull files out from under a
- * running gateway.
+ * Only call this right before starting the gateway, with no gateway running
+ * (see gateway/startup.ts): restoreBackup unmounts and remounts
+ * /home/openclaw, which would pull files out from under a running gateway and
+ * roll its state back to the snapshot.
  *
- * The backup handles are read from R2 (persisted across Worker isolate
- * restarts). An in-memory flag prevents redundant restores within the same
- * isolate.
+ * Whether a restore already happened is tracked by a marker in the
+ * container's /tmp rather than Worker memory, since Worker isolates come and
+ * go independently of the container.
  */
 export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promise<void> {
-  if (restored) {
-    // Fast path: this isolate already restored. But check if another
-    // isolate signaled a restore is needed (e.g. after gateway restart).
-    const marker = await bucket.head(RESTORE_NEEDED_KEY);
-    if (!marker) return; // No restore signal — we're good
-    console.log('[persistence] Restore signal found in R2, re-restoring...');
-    restored = false;
-  }
+  if (await hasRestoreMarker(sandbox)) return;
 
   const handles = await getSnapshotHandles(bucket);
   const gone: SnapshotHandle[] = [];
@@ -165,7 +148,7 @@ export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promi
       );
     }
     // oxlint-disable-next-line no-await-in-loop
-    await finishRestore(sandbox, bucket);
+    await writeRestoreMarker(sandbox);
     console.log(`[persistence] Restore complete in ${Date.now() - t0}ms`);
     return;
   }
@@ -180,13 +163,7 @@ export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promi
   } else {
     console.log('[persistence] No backups found in R2, starting fresh');
   }
-  await finishRestore(sandbox, bucket);
-}
-
-async function finishRestore(sandbox: Sandbox, bucket: R2Bucket): Promise<void> {
   await writeRestoreMarker(sandbox);
-  await bucket.delete(RESTORE_NEEDED_KEY);
-  restored = true;
 }
 
 /**

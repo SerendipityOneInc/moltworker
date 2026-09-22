@@ -1,13 +1,8 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types';
 import { createAccessMiddleware } from '../auth';
-import { ensureGateway, findExistingGatewayProcess, killGateway, waitForProcess } from '../gateway';
-import {
-  createSnapshot,
-  getSnapshotHandles,
-  isSafeToBackup,
-  signalRestoreNeeded,
-} from '../persistence';
+import { findExistingGatewayProcess, killGateway, waitForProcess } from '../gateway';
+import { createSnapshot, getSnapshotHandles, isSafeToBackup } from '../persistence';
 import { getBackupState, getSnapshotIntervalMs } from '../cron/backup';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
@@ -35,7 +30,7 @@ adminApi.get('/devices', async (c) => {
 
   try {
     // Ensure gateway is running first
-    await ensureGateway(sandbox, c.env);
+    await sandbox.ensureStarted();
 
     // Run OpenClaw CLI to list devices
     // Must specify --url and --token (OpenClaw v2026.2.3 requires explicit credentials with --url)
@@ -92,7 +87,7 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
 
   try {
     // Ensure gateway is running first
-    await ensureGateway(sandbox, c.env);
+    await sandbox.ensureStarted();
 
     // Run OpenClaw CLI to approve the device
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
@@ -128,7 +123,7 @@ adminApi.post('/devices/approve-all', async (c) => {
 
   try {
     // Ensure gateway is running first
-    await ensureGateway(sandbox, c.env);
+    await sandbox.ensureStarted();
 
     // First, get the list of pending devices
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
@@ -289,12 +284,6 @@ adminApi.post('/gateway/restart', async (c) => {
     const existingProcess = await findExistingGatewayProcess(sandbox);
     console.log('[Restart] Killing gateway, existing process:', existingProcess?.id ?? 'none');
     await killGateway(sandbox);
-
-    // Signal that all Worker isolates need to re-restore from R2.
-    // This writes a marker to R2 that restoreIfNeeded checks, ensuring
-    // the FUSE overlay is mounted even if a different isolate handles
-    // the next request (e.g. browser WebSocket reconnect).
-    await signalRestoreNeeded(c.env.BACKUP_BUCKET);
 
     return c.json({
       success: true,

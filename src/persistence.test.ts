@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Sandbox } from '@cloudflare/sandbox';
 import {
-  clearPersistenceCache,
   createSnapshot,
   getSnapshotHandles,
   isSafeToBackup,
@@ -12,8 +11,12 @@ import {
 } from './persistence';
 import { createMockBucket, createMockExecResult, seedJson, suppressConsole } from './test-utils';
 
-function createBackupSandbox() {
-  const execMock = vi.fn().mockResolvedValue(createMockExecResult());
+function createBackupSandbox(options: { restored?: boolean } = {}) {
+  const execMock = vi.fn(async (cmd: string) =>
+    cmd === `test -f ${RESTORE_MARKER}`
+      ? createMockExecResult('', { exitCode: options.restored ? 0 : 1 })
+      : createMockExecResult(),
+  );
   const restoreBackupMock = vi.fn().mockResolvedValue({ success: true });
   const createBackupMock = vi.fn();
   const readFileMock = vi.fn();
@@ -40,10 +43,13 @@ function execCommands(execMock: ReturnType<typeof vi.fn>): string[] {
   return execMock.mock.calls.map((call) => call[0] as string);
 }
 
+function wroteMarker(execMock: ReturnType<typeof vi.fn>): boolean {
+  return execCommands(execMock).some((cmd) => cmd.endsWith(`> ${RESTORE_MARKER}`));
+}
+
 describe('persistence', () => {
   beforeEach(() => {
     suppressConsole();
-    clearPersistenceCache();
   });
 
   describe('restoreIfNeeded', () => {
@@ -54,7 +60,7 @@ describe('persistence', () => {
       await restoreIfNeeded(sandbox, bucket);
 
       expect(restoreBackupMock).not.toHaveBeenCalled();
-      expect(execCommands(execMock).some((cmd) => cmd.includes(RESTORE_MARKER))).toBe(true);
+      expect(wroteMarker(execMock)).toBe(true);
     });
 
     it('restores the newest snapshot', async () => {
@@ -70,15 +76,17 @@ describe('persistence', () => {
       expect(restoreBackupMock).toHaveBeenCalledWith({ id: 'new', dir: '/home/openclaw' });
     });
 
-    it('skips restore on the fast path once restored', async () => {
-      const { bucket } = createMockBucket();
-      const { sandbox, execMock } = createBackupSandbox();
+    it('skips restore when this container was already restored', async () => {
+      const { bucket, objects } = createMockBucket();
+      seedJson(objects, 'backup-handles.json', {
+        snapshots: [handle('new', '2026-09-02T00:00:00Z')],
+      });
+      const { sandbox, execMock, restoreBackupMock } = createBackupSandbox({ restored: true });
 
       await restoreIfNeeded(sandbox, bucket);
-      execMock.mockClear();
-      await restoreIfNeeded(sandbox, bucket);
 
-      expect(execMock).not.toHaveBeenCalled();
+      expect(restoreBackupMock).not.toHaveBeenCalled();
+      expect(execCommands(execMock)).toEqual([`test -f ${RESTORE_MARKER}`]);
     });
 
     it('falls back to an older snapshot when the newest has expired', async () => {
@@ -108,7 +116,7 @@ describe('persistence', () => {
 
       expect(await getSnapshotHandles(bucket)).toEqual([]);
       expect(objects.has('backups/gone/meta.json')).toBe(true);
-      expect(execCommands(execMock).some((cmd) => cmd.includes(RESTORE_MARKER))).toBe(true);
+      expect(wroteMarker(execMock)).toBe(true);
     });
 
     it('rethrows transient errors without trying older backups or writing the marker', async () => {
@@ -122,7 +130,7 @@ describe('persistence', () => {
       await expect(restoreIfNeeded(sandbox, bucket)).rejects.toThrow('container unreachable');
 
       expect(restoreBackupMock).toHaveBeenCalledTimes(1);
-      expect(execCommands(execMock).some((cmd) => cmd.includes(RESTORE_MARKER))).toBe(false);
+      expect(wroteMarker(execMock)).toBe(false);
     });
 
     it('restores from the legacy single-handle key', async () => {

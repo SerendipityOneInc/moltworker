@@ -1,7 +1,7 @@
 import { getSandbox } from '@cloudflare/sandbox';
 import type { OpenClawEnv } from '../types';
+import type { Sandbox } from '../sandbox';
 import { buildSandboxOptions } from '../index';
-import { ensureGateway } from '../gateway';
 import { shouldWakeContainer, DEFAULT_LEAD_TIME_MS, CRON_STORE_R2_KEY } from './wake';
 import { runScheduledBackup } from './backup';
 
@@ -40,10 +40,7 @@ export async function handleScheduled(env: OpenClawEnv): Promise<void> {
  *
  * Configure the check interval in wrangler.jsonc triggers.crons (default: every 1 minute).
  */
-async function wakeForCronJobs(
-  env: OpenClawEnv,
-  sandbox: ReturnType<typeof getSandbox>,
-): Promise<void> {
+async function wakeForCronJobs(env: OpenClawEnv, sandbox: Sandbox): Promise<void> {
   const cronStoreObject = await env.BACKUP_BUCKET.get(CRON_STORE_R2_KEY);
   if (!cronStoreObject) {
     console.log('[CRON] No cron store found in R2, skipping');
@@ -64,6 +61,6 @@ async function wakeForCronJobs(
   const deltaMinutes = ((earliestRun - nowMs) / 60_000).toFixed(1);
   console.log(`[CRON] Cron job due in ${deltaMinutes}m, waking container`);
 
-  await ensureGateway(sandbox, env);
+  await sandbox.ensureStarted();
   console.log('[CRON] Container woken successfully');
 }

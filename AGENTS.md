@@ -17,6 +17,7 @@ This is a Cloudflare Worker that runs [OpenClaw](https://github.com/openclaw/ope
 ```
 src/
 ├── index.ts          # Main Hono app, route mounting
+├── sandbox.ts        # Sandbox Durable Object subclass (serialized gateway startup)
 ├── types.ts          # TypeScript type definitions
 ├── config.ts         # Constants (ports, timeouts, paths)
 ├── persistence.ts    # Snapshot backup/restore of /home/openclaw
@@ -30,6 +31,8 @@ src/
 │   └── middleware.ts # Hono middleware for auth
 ├── gateway/          # OpenClaw gateway management
 │   ├── process.ts    # Process lifecycle (find, start)
+│   ├── startup.ts    # ensureStarted: restore + start once, crash recovery
+│   ├── token-script.ts # Gateway token auto-fill for the Control UI
 │   ├── env.ts        # Environment variable building
 │   └── utils.ts      # Shared utilities (waitForProcess)
 ├── routes/           # API route handlers
@@ -49,6 +52,10 @@ src/
 - `DEV_MODE` - Skips CF Access auth AND bypasses device pairing (maps to `OPENCLAW_DEV_MODE` for container)
 - `DEBUG_ROUTES` - Enables `/debug/*` routes (disabled by default)
 - See `src/types.ts` for full `MoltbotEnv` interface
+
+### Gateway Startup
+
+Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard.
 
 ### Gateway Token Auto-Fill
 
@@ -266,7 +273,7 @@ Gotchas:
 
 - **Restore order**: newest snapshot → older snapshots (if expired/not found). Transient restore errors are rethrown rather than falling back, so a temporary failure never rolls state back. If every snapshot is gone the container starts fresh; the expired objects stay in R2 under `backups/<id>/`.
 - **Restore marker**: after a successful restore (or when R2 has no backups) the Worker writes `/tmp/moltworker-state-ok` in the container. `/tmp` is wiped on container restart. `isSafeToBackup()` requires this marker, so a container running with empty state never overwrites good backups. `POST /api/admin/storage/sync?force=true` bypasses it.
-- **Restore only before starting the gateway**: `restoreBackup()` unmounts and remounts `/home/openclaw` as a FUSE overlay. Only call `restoreIfNeeded` from the catch-all proxy and `/api/status`.
+- **Restore only before starting the gateway**: `restoreBackup()` unmounts and remounts `/home/openclaw` as a FUSE overlay; doing that under a running gateway rolls its state back and detaches its later writes from backups. `restoreIfNeeded` is only called from `ensureStarted`, with no gateway running, and skips containers that already have the restore marker (not a per-isolate flag — isolates are recycled independently of the container). A failed restore aborts startup rather than starting a blank gateway.
 - **createBackup is non-destructive**: it runs `mksquashfs` on the merged overlay view. It is safe while the gateway runs; partially written files may be inconsistent.
 - **Expired snapshots are not deleted by the SDK**: `createSnapshot` deletes pruned snapshots' R2 objects itself.
 - **Automatic backups** run from the cron trigger (`src/cron/backup.ts`) only when `SANDBOX_SLEEP_AFTER=never`, because the RPCs would keep a sleeping container awake. An R2 lock (`backup-lock`) prevents overlap, and `backup-state.json` records the last attempt so failures retry after one interval rather than every minute.

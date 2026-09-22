@@ -12,6 +12,18 @@
 
 set -e
 
+# Only one copy of this script may run at a time. The Worker serializes
+# startup, but this guards against duplicate launches reaching the container
+# (e.g. two concurrent onboards writing openclaw.json). The lock is released
+# right before exec'ing the gateway, since processes the gateway spawns would
+# otherwise inherit fd 9 and could hold the lock after the gateway dies; from
+# then on the pgrep check below catches duplicates.
+exec 9>/tmp/start-openclaw.lock
+if ! flock -n 9; then
+    echo "Another start-openclaw.sh holds the startup lock, exiting."
+    exit 0
+fi
+
 if pgrep -f "openclaw gateway" > /dev/null 2>&1; then
     echo "OpenClaw gateway is already running, exiting."
     exit 0
@@ -225,4 +237,6 @@ if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
 else
     echo "Starting gateway with device pairing (no token)..."
 fi
+flock -u 9
+exec 9>&-
 exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
