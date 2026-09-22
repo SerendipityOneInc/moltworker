@@ -70,8 +70,26 @@ if [ ! -f "$CONFIG_FILE" ]; then
         --skip-health
 
     echo "Onboard completed"
+    # Fresh config from this version needs no migration
+    openclaw --version 2>/dev/null | head -1 > "$CONFIG_DIR/.moltworker-doctor-version"
 else
     echo "Using existing config"
+
+    # After an OpenClaw upgrade, state written by the old version may need
+    # migrating before the gateway will start (e.g. 2026.9 moved sessions to
+    # SQLite and refuses to start until `openclaw doctor --fix` has run).
+    # Run doctor once per version; the marker lives in the backed-up config
+    # dir so it survives restarts.
+    DOCTOR_MARKER="$CONFIG_DIR/.moltworker-doctor-version"
+    OPENCLAW_VERSION=$(openclaw --version 2>/dev/null | head -1)
+    if [ "$(cat "$DOCTOR_MARKER" 2>/dev/null)" != "$OPENCLAW_VERSION" ]; then
+        echo "Running openclaw doctor for $OPENCLAW_VERSION..."
+        if openclaw doctor --fix --non-interactive --yes; then
+            echo "$OPENCLAW_VERSION" > "$DOCTOR_MARKER"
+        else
+            echo "WARNING: openclaw doctor failed; the gateway may refuse to start"
+        fi
+    fi
 fi
 
 # ============================================================
@@ -101,7 +119,15 @@ config.channels = config.channels || {};
 // Gateway configuration
 config.gateway.port = 18789;
 config.gateway.mode = 'local';
-config.gateway.trustedProxies = ['10.1.0.0'];
+// Requests reach the gateway from the Sandbox platform over a private
+// address (only the platform can reach the container port). The Worker
+// rebuilds X-Forwarded-For from CF-Connecting-IP (see
+// src/gateway/forwarded-headers.ts); OpenClaw >= 2026.9 rejects forwarded
+// headers from untrusted peers with 403 proxy_attribution_required.
+config.gateway.trustedProxies = [
+    '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10',
+    '127.0.0.0/8', '::1', 'fc00::/7',
+];
 
 config.gateway.controlUi = config.gateway.controlUi || {};
 config.gateway.controlUi.allowedOrigins = ['*'];
