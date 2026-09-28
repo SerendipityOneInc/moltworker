@@ -72,7 +72,7 @@ Bump the version in the `Dockerfile` (check `npm view openclaw@<version> engines
 
 ### Gateway WebSocket Domain
 
-`src/routes/gateway-ws.ts` handles an optional second custom domain (`GATEWAY_WS_HOSTNAME` var, set from `WORKER_GATEWAY_WS_DOMAIN` at build time) for native clients that can't pass Cloudflare Access. Its middleware runs before the Access middleware and answers 404 to anything that isn't a WebSocket upgrade, so only the gateway is reachable there; it also never injects the gateway token. Auth on that host is OpenClaw's own gateway token plus device pairing.
+`src/routes/gateway-ws.ts` handles an optional second custom domain (`GATEWAY_WS_HOSTNAME` var, set from `WORKER_GATEWAY_WS_DOMAIN` at build time) for native clients that can't pass Cloudflare Access. Its middleware runs before the Access middleware and answers 404 to anything that isn't a WebSocket upgrade or a GET/HEAD under `/api/chat/media/` (native clients load generated images over HTTP; the gateway answers 401 there without a token), so the Control UI, admin UI and token script stay off that host; it also never injects the gateway token. Auth on that host is OpenClaw's own gateway token plus device pairing.
 
 ### Gateway Token Auto-Fill
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Context } from 'hono';
-import { gatewayWsMiddleware, isGatewayWsHost } from './gateway-ws';
+import { gatewayWsMiddleware, isAllowedGatewayHttpRequest, isGatewayWsHost } from './gateway-ws';
 import type { AppEnv, OpenClawEnv } from '../types';
 import { createMockEnv } from '../test-utils';
 
@@ -12,12 +12,15 @@ function createContext(options: {
   env?: Partial<OpenClawEnv>;
   ensureStarted?: ReturnType<typeof vi.fn>;
   wsConnect?: ReturnType<typeof vi.fn>;
+  containerFetch?: ReturnType<typeof vi.fn>;
 }) {
   const headers = new Headers({ 'cf-connecting-ip': '203.0.113.5', 'x-forwarded-for': 'spoofed' });
   if (options.upgrade) headers.set('Upgrade', options.upgrade);
   const request = new Request(options.url, { headers });
   const textMock = vi.fn((body: string, status?: number) => new Response(body, { status }));
   const sandbox = {
+    containerFetch:
+      options.containerFetch ?? vi.fn().mockResolvedValue(new Response('img', { status: 200 })),
     ensureStarted: options.ensureStarted ?? vi.fn().mockResolvedValue(undefined),
     // Response can't be constructed with 101, so stand in for the upgrade
     wsConnect:
@@ -53,6 +56,16 @@ describe('isGatewayWsHost', () => {
   });
 });
 
+describe('isAllowedGatewayHttpRequest', () => {
+  it('allows reads of chat media only', () => {
+    expect(isAllowedGatewayHttpRequest('GET', '/api/chat/media/outgoing/x/full')).toBe(true);
+    expect(isAllowedGatewayHttpRequest('HEAD', '/api/chat/media/incoming/y')).toBe(true);
+    expect(isAllowedGatewayHttpRequest('POST', '/api/chat/media/outgoing/x/full')).toBe(false);
+    expect(isAllowedGatewayHttpRequest('GET', '/api/chat/sessions')).toBe(false);
+    expect(isAllowedGatewayHttpRequest('GET', '/')).toBe(false);
+  });
+});
+
 describe('gatewayWsMiddleware', () => {
   it('passes other hosts through untouched', async () => {
     const { c, sandbox } = createContext({
@@ -82,7 +95,20 @@ describe('gatewayWsMiddleware', () => {
     expect(new URL(proxied.url).searchParams.has('token')).toBe(false);
   });
 
-  it('answers 404 to non-WebSocket requests on the gateway host', async () => {
+  it('proxies chat media requests so native clients can load images', async () => {
+    const { c, sandbox } = createContext({
+      url: `https://${GW_HOST}/api/chat/media/outgoing/agent%3Amain/abc/full`,
+    });
+
+    const response = await gatewayWsMiddleware()(c, vi.fn());
+
+    expect(response?.status).toBe(200);
+    expect(sandbox.containerFetch).toHaveBeenCalled();
+    const proxied = sandbox.containerFetch.mock.calls[0][0] as Request;
+    expect(proxied.headers.get('x-forwarded-for')).toBe('203.0.113.5');
+  });
+
+  it('answers 404 to other non-WebSocket requests on the gateway host', async () => {
     const { c, sandbox, textMock } = createContext({ url: `https://${GW_HOST}/_admin/` });
     const next = vi.fn();
 

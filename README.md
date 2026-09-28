@@ -170,7 +170,7 @@ echo "WORKER_GATEWAY_WS_DOMAIN=bot-gw.example.com" >> .env.local
 npm run deploy
 ```
 
-Do **not** put a Cloudflare Access application in front of it. Everything that isn't a WebSocket upgrade returns 404 there, so the Control UI, admin UI and the gateway token script stay behind Access on the main domain. The Worker does not inject the gateway token on this domain: point the app at `bot-gw.example.com`, enter `MOLTBOT_GATEWAY_TOKEN` as the token, and approve the new device in `/_admin/`.
+Do **not** put a Cloudflare Access application in front of it. Everything that isn't a WebSocket upgrade or a chat-media read (`GET /api/chat/media/...`, which the gateway authenticates itself) returns 404 there, so the Control UI, admin UI and the gateway token script stay behind Access on the main domain. The Worker does not inject the gateway token on this domain: point the app at `bot-gw.example.com`, enter `MOLTBOT_GATEWAY_TOKEN` as the token, and approve the new device in `/_admin/`.
 
 ### SSH Into the Container
 
