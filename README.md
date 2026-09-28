@@ -161,6 +161,17 @@ npm run deploy
 
 The domain must be on a zone in your Cloudflare account. The build adds it as a [Custom Domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) (DNS record and certificate are created automatically) and disables the `workers.dev` URL. Point your Access application at this domain instead of `workers.dev`.
 
+### Native Clients (iOS app)
+
+Native OpenClaw clients can't complete a Cloudflare Access browser login. Set `WORKER_GATEWAY_WS_DOMAIN` in `.env.local` to a second custom domain and redeploy; that domain serves **only** gateway WebSockets:
+
+```bash
+echo "WORKER_GATEWAY_WS_DOMAIN=bot-gw.example.com" >> .env.local
+npm run deploy
+```
+
+Do **not** put a Cloudflare Access application in front of it. Everything that isn't a WebSocket upgrade returns 404 there, so the Control UI, admin UI and the gateway token script stay behind Access on the main domain. The Worker does not inject the gateway token on this domain: point the app at `bot-gw.example.com`, enter `MOLTBOT_GATEWAY_TOKEN` as the token, and approve the new device in `/_admin/`.
+
 ### SSH Into the Container
 
 SSH is enabled in `wrangler.jsonc` (`containers[].ssh` and `authorized_keys`). Replace the public key with your own `ssh-ed25519` key (or remove the block) before deploying. Connect through Wrangler, which authenticates with your Cloudflare account; no port is exposed publicly:

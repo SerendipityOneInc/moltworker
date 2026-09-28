@@ -70,6 +70,10 @@ Bump the version in the `Dockerfile` (check `npm view openclaw@<version> engines
 
 `plugins/workers-ai-image/` is an OpenClaw plugin that registers image-generation provider `workers-ai` for the built-in `image_generate` tool, calling the Workers AI REST API (`/ai/run/<model>`) with the container's AI Gateway token (needs Workers AI Read). FLUX.2 models only accept multipart form data; FLUX.1 schnell and Leonardo models take JSON; responses carry base64 in `result.image`. The image copies plugins and skills to `/opt/moltworker/` (outside the restored home dir) and `start-openclaw.sh` adds them to `plugins.load.paths` / `skills.load.extraDirs`, and sets `agents.defaults.mediaModels.image.primary` (override with `IMAGE_GENERATION_MODEL`). Workers AI has no video models, so `video_generate` needs another provider. Test plugin changes with `openclaw infer image generate --json` on a native-arch container.
 
+### Gateway WebSocket Domain
+
+`src/routes/gateway-ws.ts` handles an optional second custom domain (`GATEWAY_WS_HOSTNAME` var, set from `WORKER_GATEWAY_WS_DOMAIN` at build time) for native clients that can't pass Cloudflare Access. Its middleware runs before the Access middleware and answers 404 to anything that isn't a WebSocket upgrade, so only the gateway is reachable there; it also never injects the gateway token. Auth on that host is OpenClaw's own gateway token plus device pairing.
+
 ### Gateway Token Auto-Fill
 
 The Control UI sends the gateway token inside the signed WebSocket `connect` frame and stores it in per-tab sessionStorage, so the Worker can't inject it on the wire. Instead `src/gateway/token-script.ts` injects `<script src="/_moltworker/gateway-token.js">` into proxied HTML; the script adds `#token=` to the URL when the tab has no stored token, which the UI picks up and strips. The gateway's CSP only allows `script-src 'self'`, so the script must be same-origin, not inline.
