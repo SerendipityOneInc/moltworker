@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Context } from 'hono';
-import { gatewayWsMiddleware, isAllowedGatewayHttpRequest, isGatewayWsHost } from './gateway-ws';
+import { gatewayWsMiddleware, isGatewayWsHost } from './gateway-ws';
 import type { AppEnv, OpenClawEnv } from '../types';
 import { createMockEnv } from '../test-utils';
 
@@ -56,16 +56,6 @@ describe('isGatewayWsHost', () => {
   });
 });
 
-describe('isAllowedGatewayHttpRequest', () => {
-  it('allows reads of chat media only', () => {
-    expect(isAllowedGatewayHttpRequest('GET', '/api/chat/media/outgoing/x/full')).toBe(true);
-    expect(isAllowedGatewayHttpRequest('HEAD', '/api/chat/media/incoming/y')).toBe(true);
-    expect(isAllowedGatewayHttpRequest('POST', '/api/chat/media/outgoing/x/full')).toBe(false);
-    expect(isAllowedGatewayHttpRequest('GET', '/api/chat/sessions')).toBe(false);
-    expect(isAllowedGatewayHttpRequest('GET', '/')).toBe(false);
-  });
-});
-
 describe('gatewayWsMiddleware', () => {
   it('passes other hosts through untouched', async () => {
     const { c, sandbox } = createContext({
@@ -95,7 +85,7 @@ describe('gatewayWsMiddleware', () => {
     expect(new URL(proxied.url).searchParams.has('token')).toBe(false);
   });
 
-  it('proxies chat media requests so native clients can load images', async () => {
+  it('proxies HTTP requests so native clients can load chat media', async () => {
     const { c, sandbox } = createContext({
       url: `https://${GW_HOST}/api/chat/media/outgoing/agent%3Amain/abc/full`,
     });
@@ -106,17 +96,19 @@ describe('gatewayWsMiddleware', () => {
     expect(sandbox.containerFetch).toHaveBeenCalled();
     const proxied = sandbox.containerFetch.mock.calls[0][0] as Request;
     expect(proxied.headers.get('x-forwarded-for')).toBe('203.0.113.5');
+    // The gateway authenticates itself, so no token is injected here either
+    expect(new URL(proxied.url).searchParams.has('token')).toBe(false);
   });
 
-  it('answers 404 to other non-WebSocket requests on the gateway host', async () => {
-    const { c, sandbox, textMock } = createContext({ url: `https://${GW_HOST}/_admin/` });
-    const next = vi.fn();
+  it('reports 502 when the HTTP proxy fails', async () => {
+    const { c, textMock } = createContext({
+      url: `https://${GW_HOST}/api/chat/sessions`,
+      containerFetch: vi.fn().mockRejectedValue(new Error('nope')),
+    });
 
-    await gatewayWsMiddleware()(c, next);
+    await gatewayWsMiddleware()(c, vi.fn());
 
-    expect(next).not.toHaveBeenCalled();
-    expect(sandbox.ensureStarted).not.toHaveBeenCalled();
-    expect(textMock).toHaveBeenCalledWith('Not Found', 404);
+    expect(textMock).toHaveBeenCalledWith('Proxy error', 502);
   });
 
   it('reports 503 when the gateway cannot start', async () => {

@@ -35,7 +35,7 @@ export interface OpenClawEnv {
   // Cloudflare Access configuration for admin routes
   CF_ACCESS_TEAM_DOMAIN?: string; // e.g., 'myteam.cloudflareaccess.com'
   CF_ACCESS_AUD?: string; // Application Audience (AUD) tag
-  GATEWAY_WS_HOSTNAME?: string; // Second custom domain that serves only gateway WebSockets, without Access (see routes/gateway-ws.ts)
+  GATEWAY_WS_HOSTNAME?: string; // Second custom domain that proxies straight to the gateway, without Access (see routes/gateway-ws.ts)
   // R2 credentials for Sandbox SDK backup/restore (set via wrangler secret)
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
