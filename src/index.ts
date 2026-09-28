@@ -32,7 +32,7 @@ import {
   injectGatewayTokenScript,
   GATEWAY_TOKEN_SCRIPT_PATH,
 } from './gateway';
-import { publicRoutes, api, adminUi, debug, cdp } from './routes';
+import { publicRoutes, api, adminUi, debug, cdp, gatewayWsMiddleware } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import { Sandbox } from './sandbox';
 import { withTrustedForwardedHeaders } from './gateway/forwarded-headers';
@@ -168,6 +168,11 @@ app.use('*', async (c, next) => {
 
   await next();
 });
+
+// Native clients (e.g. the OpenClaw iOS app) can't pass Cloudflare Access, so
+// a second custom domain serves gateway WebSockets only. Must run before the
+// Access middleware; other hosts fall through untouched.
+app.use('*', gatewayWsMiddleware());
 
 // =============================================================================
 // PUBLIC ROUTES: No Cloudflare Access authentication required

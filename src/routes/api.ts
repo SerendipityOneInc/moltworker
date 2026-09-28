@@ -4,6 +4,7 @@ import { createAccessMiddleware } from '../auth';
 import { findExistingGatewayProcess, killGateway, waitForProcess } from '../gateway';
 import { createSnapshot, getSnapshotHandles, isSafeToBackup } from '../persistence';
 import { getBackupState, getSnapshotIntervalMs } from '../cron/backup';
+import { isApprovalSuccess, parseDeviceList, resolvePendingRequestId } from '../gateway/devices';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
 const CLI_TIMEOUT_MS = 20000;
@@ -77,6 +78,9 @@ adminApi.get('/devices', async (c) => {
 });
 
 // POST /api/admin/devices/:requestId/approve - Approve a pending device
+// Body (optional): { "deviceId": "..." } — a client that reconnects gets a new
+// requestId, so the id the admin UI shows goes stale; the deviceId is stable
+// and lets us re-resolve the current request.
 adminApi.post('/devices/:requestId/approve', async (c) => {
   const sandbox = c.get('sandbox');
   const requestId = c.req.param('requestId');
@@ -85,31 +89,69 @@ adminApi.post('/devices/:requestId/approve', async (c) => {
     return c.json({ error: 'requestId is required' }, 400);
   }
 
+  let deviceId: string | undefined;
   try {
-    // Ensure gateway is running first
-    await sandbox.ensureStarted();
+    const body = await c.req.json<{ deviceId?: string }>();
+    deviceId = body?.deviceId;
+  } catch {
+    // No body sent
+  }
 
-    // Run OpenClaw CLI to approve the device
+  try {
+    await sandbox.ensureStarted();
     const token = c.env.MOLTBOT_GATEWAY_TOKEN;
     const tokenArg = token ? ` --token ${token}` : '';
-    const proc = await sandbox.startProcess(
-      `openclaw devices approve ${requestId} --url ws://localhost:18789${tokenArg}`,
-    );
-    await waitForProcess(proc, CLI_TIMEOUT_MS);
 
-    const logs = await proc.getLogs();
-    const stdout = logs.stdout || '';
-    const stderr = logs.stderr || '';
+    const approve = async (id: string) => {
+      const proc = await sandbox.startProcess(
+        `openclaw devices approve ${id} --url ws://localhost:18789${tokenArg}`,
+      );
+      await waitForProcess(proc, CLI_TIMEOUT_MS);
+      const logs = await proc.getLogs();
+      return {
+        stdout: logs.stdout || '',
+        stderr: logs.stderr || '',
+        success: isApprovalSuccess(logs.stdout || '', proc.exitCode),
+      };
+    };
 
-    // Check for success indicators (case-insensitive, CLI outputs "Approved ...")
-    const success = stdout.toLowerCase().includes('approved') || proc.exitCode === 0;
+    let result = await approve(requestId);
+    let approvedId = requestId;
+
+    // Stale request id: look up the device's current pending request
+    if (!result.success && deviceId) {
+      const listProc = await sandbox.startProcess(
+        `openclaw devices list --json --url ws://localhost:18789${tokenArg}`,
+      );
+      await waitForProcess(listProc, CLI_TIMEOUT_MS);
+      const listLogs = await listProc.getLogs();
+      const currentId = resolvePendingRequestId(parseDeviceList(listLogs.stdout || ''), {
+        requestId,
+        deviceId,
+      });
+      if (currentId && currentId !== requestId) {
+        console.log(`[devices] Request ${requestId} is stale, approving ${currentId}`);
+        result = await approve(currentId);
+        approvedId = currentId;
+      } else if (!currentId) {
+        return c.json(
+          {
+            success: false,
+            requestId,
+            error:
+              'Pairing request is no longer pending. The client may have reconnected — refresh and approve again.',
+          },
+          409,
+        );
+      }
+    }
 
     return c.json({
-      success,
-      requestId,
-      message: success ? 'Device approved' : 'Approval may have failed',
-      stdout,
-      stderr,
+      success: result.success,
+      requestId: approvedId,
+      message: result.success ? 'Device approved' : 'Approval may have failed',
+      stdout: result.stdout,
+      stderr: result.stderr,
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
