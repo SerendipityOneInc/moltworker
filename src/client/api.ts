@@ -89,9 +89,15 @@ export async function listDevices(): Promise<DeviceListResponse> {
   return apiRequest<DeviceListResponse>('/devices');
 }
 
-export async function approveDevice(requestId: string): Promise<ApproveResponse> {
+export async function approveDevice(
+  requestId: string,
+  deviceId?: string,
+): Promise<ApproveResponse> {
   return apiRequest<ApproveResponse>(`/devices/${requestId}/approve`, {
     method: 'POST',
+    // Sent so the Worker can re-resolve the request id if the client reconnected
+    body: JSON.stringify({ deviceId }),
+    headers: { 'Content-Type': 'application/json' },
   });
 }
 

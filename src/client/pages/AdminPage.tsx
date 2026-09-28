@@ -93,10 +93,10 @@ export default function AdminPage() {
     fetchStorageStatus();
   }, [fetchDevices, fetchStorageStatus]);
 
-  const handleApprove = async (requestId: string) => {
+  const handleApprove = async (requestId: string, deviceId: string) => {
     setActionInProgress(requestId);
     try {
-      const result = await approveDevice(requestId);
+      const result = await approveDevice(requestId, deviceId);
       if (result.success) {
         // Refresh the list
         await fetchDevices();
@@ -334,7 +334,7 @@ export default function AdminPage() {
                     <div className="device-actions">
                       <button
                         className="btn btn-success"
-                        onClick={() => handleApprove(device.requestId)}
+                        onClick={() => handleApprove(device.requestId, device.deviceId)}
                         disabled={actionInProgress !== null}
                       >
                         {actionInProgress === device.requestId && <ButtonSpinner />}
