@@ -57,6 +57,10 @@
           "name": "allenz",
           "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA+AhtCFXKMUhqew7jZqLHItDkALNPcX0Z3Jd0oXWsVc",
         },
+        {
+          "name": "allenz-m3",
+          "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA+AhtCFXKMUhqew7jZqLHItDkALNPcX0Z3Jd0oXWsVc",
+        },
       ],
     },
   ],

@@ -26,7 +26,7 @@ RUN ARCH="$(dpkg --print-architecture)" \
 # (bundled plugin setup, native modules like koffi and tree-sitter-bash)
 RUN npm install -g \
       --allow-scripts=openclaw,@google/genai,koffi,tree-sitter-bash,protobufjs \
-      openclaw@2026.9.5 \
+      openclaw@2026.10.4 \
     && openclaw --version
 
 # Use /home/openclaw as the home directory instead of /root.
@@ -40,7 +40,7 @@ RUN mkdir -p /home/openclaw/.openclaw \
     && ln -s /home/openclaw/clawd /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-09-22-v37-workers-ai-images
+# Build cache bust: 2026-10-16-v38-openclaw-2026.10.4
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
