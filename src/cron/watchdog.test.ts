@@ -4,7 +4,7 @@ import {
   runGatewayWatchdog,
   WATCHDOG_STATE_KEY,
   UNRESPONSIVE_THRESHOLD_MS,
-  PORT_CLOSED_THRESHOLD_MS,
+  NOT_SERVING_THRESHOLD_MS,
   ACTION_COOLDOWN_MS,
   REPEAT_ALERT_MS,
   PROBE_TIMEOUT_MS,
@@ -122,20 +122,20 @@ describe('runGatewayWatchdog', () => {
 
     const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
 
-    expect(result).toEqual({ status: 'down', health: 'port_closed', downMs: 2 * 60_000 });
+    expect(result).toEqual({ status: 'down', health: 'not_serving', downMs: 2 * 60_000 });
     expect(ensureStarted).toHaveBeenCalledWith({ waitForReady: false, recover: false });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(state()?.unhealthySince).toBe(NOW - 2 * 60_000);
   });
 
   it('restarts a gateway whose port stays closed past the threshold', async () => {
-    const since = NOW - PORT_CLOSED_THRESHOLD_MS;
+    const since = NOW - NOT_SERVING_THRESHOLD_MS;
     const { bucket } = createBucket({ unhealthySince: since, lastAlertMs: NOW - 60_000 });
     const { sandbox, ensureStarted } = createSandbox('closed', true);
 
     const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
 
-    expect(result).toEqual({ status: 'restarted', downMs: PORT_CLOSED_THRESHOLD_MS });
+    expect(result).toEqual({ status: 'restarted', downMs: NOT_SERVING_THRESHOLD_MS });
     expect(ensureStarted).toHaveBeenCalledWith({ waitForReady: false, recover: true });
     expect(alerts()).toEqual([expect.stringContaining('已杀掉进程并重启')]);
   });
@@ -249,7 +249,7 @@ describe('runGatewayWatchdog', () => {
 
     const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
 
-    expect(result).toEqual({ status: 'down', health: 'port_closed', downMs: 0 });
+    expect(result).toEqual({ status: 'down', health: 'not_serving', downMs: 0 });
     expect(errorSpy).toHaveBeenCalled();
     expect(state()).toEqual({ unhealthySince: NOW });
     errorSpy.mockRestore();

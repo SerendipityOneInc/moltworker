@@ -1,22 +1,22 @@
 import type { OpenClawEnv } from '../types';
 import type { Sandbox } from '../sandbox';
-import { isGatewayPortOpen } from '../gateway/process';
+import { isGatewayServing } from '../gateway/process';
 import { sendTelegramAlert } from '../notify/telegram';
 
 export const WATCHDOG_STATE_KEY = 'watchdog-state.json';
 
-/** How long a port probe may take before the container counts as unresponsive */
+/** How long a health probe may take before the container counts as unresponsive */
 export const PROBE_TIMEOUT_MS = 30_000;
 /** How long the watchdog waits for ensureStarted / resetContainer */
 const ACTION_TIMEOUT_MS = 120_000;
 /** Container answers nothing (exec hangs or fails) for this long: destroy it */
 export const UNRESPONSIVE_THRESHOLD_MS = 3 * 60_000;
 /**
- * Gateway process exists but its port stays closed for this long: kill and
+ * Gateway process exists but doesn't answer /healthz for this long: kill and
  * restart it. Longer than a normal start, which can include a restore and a
  * one-off doctor migration after an upgrade.
  */
-export const PORT_CLOSED_THRESHOLD_MS = 10 * 60_000;
+export const NOT_SERVING_THRESHOLD_MS = 10 * 60_000;
 /** After a restart or reset, give the new gateway this long before acting again */
 export const ACTION_COOLDOWN_MS = 10 * 60_000;
 /** While the gateway stays down, remind the operator at most this often */
@@ -32,7 +32,7 @@ export interface WatchdogState {
   lastAlertMs?: number;
 }
 
-export type GatewayHealth = 'healthy' | 'port_closed' | 'unresponsive';
+export type GatewayHealth = 'healthy' | 'not_serving' | 'unresponsive';
 
 export type WatchdogResult =
   | { status: 'disabled' }
@@ -54,14 +54,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
- * Probe the gateway port with a deadline. A frozen container (out of memory,
+ * Probe the gateway's /healthz with a deadline. A frozen container (out of memory,
  * CPU starved) keeps its processes but never answers exec, so a probe without
  * a deadline would hang the cron run instead of reporting the problem.
  */
 export async function checkGatewayHealth(sandbox: Sandbox): Promise<GatewayHealth> {
   try {
-    const open = await withTimeout(isGatewayPortOpen(sandbox), PROBE_TIMEOUT_MS);
-    return open ? 'healthy' : 'port_closed';
+    const serving = await withTimeout(isGatewayServing(sandbox), PROBE_TIMEOUT_MS);
+    return serving ? 'healthy' : 'not_serving';
   } catch {
     return 'unresponsive';
   }
@@ -86,10 +86,10 @@ function minutes(ms: number): number {
  * stops answering, and replace the container when the container itself hangs.
  *
  * Runs from the Workers Cron Trigger every minute. Levels:
- * - Port closed and no gateway process: start it (shares the Sandbox Durable
+ * - /healthz fails and no gateway process: start it (shares the Sandbox Durable
  *   Object's startup lock with requests, so it never starts twice).
- * - Port closed for PORT_CLOSED_THRESHOLD_MS although a process exists: the
- *   gateway is wedged; ensureStarted({ recover: true }) kills and restarts it.
+ * - /healthz fails for NOT_SERVING_THRESHOLD_MS although a process exists:
+ *   the gateway is wedged; ensureStarted({ recover: true }) kills and restarts it.
  * - Exec times out or fails for UNRESPONSIVE_THRESHOLD_MS: the container is
  *   frozen; destroy it so the next run starts a fresh one from the latest
  *   snapshot (losing changes since that snapshot).
@@ -132,8 +132,8 @@ export async function runGatewayWatchdog(
   let result: WatchdogResult = { status: 'down', health, downMs };
   let alert: string | null = null;
 
-  if (health === 'port_closed') {
-    const recover = downMs >= PORT_CLOSED_THRESHOLD_MS && !coolingDown;
+  if (health === 'not_serving') {
+    const recover = downMs >= NOT_SERVING_THRESHOLD_MS && !coolingDown;
     try {
       const started = await withTimeout(
         sandbox.ensureStarted({ waitForReady: false, recover }),
@@ -143,7 +143,7 @@ export async function runGatewayWatchdog(
         next.lastActionMs = nowMs;
         if (recover) {
           result = { status: 'restarted', downMs };
-          alert = `⚠️ Moltworker 网关端口 ${minutes(downMs)} 分钟无响应，已杀掉进程并重启。`;
+          alert = `⚠️ Moltworker 网关 ${minutes(downMs)} 分钟不响应 HTTP，已杀掉进程并重启。`;
         } else {
           result = { status: 'started' };
           alert = '⚠️ Moltworker 网关进程不在运行，已重新启动。';
@@ -170,7 +170,7 @@ export async function runGatewayWatchdog(
     downMs >= UNRESPONSIVE_THRESHOLD_MS &&
     (state.lastAlertMs === undefined || nowMs - state.lastAlertMs >= REPEAT_ALERT_MS)
   ) {
-    const reason = health === 'unresponsive' ? '容器无响应' : '网关端口未开放';
+    const reason = health === 'unresponsive' ? '容器无响应' : '网关不响应 HTTP';
     alert = `⚠️ Moltworker 网关仍不可用（${reason}），已持续 ${minutes(downMs)} 分钟。`;
   }
 

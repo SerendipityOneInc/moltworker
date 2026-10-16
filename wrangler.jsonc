@@ -37,13 +37,14 @@
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
-      // 1 vCPU / 4 GiB: standard-1's 1/2 vCPU saturates during startup and
-      // agent turns. Custom types need >= 3 GiB memory per vCPU. CPU is
-      // billed on active use, memory on what's provisioned.
+      // 2 vCPU / 8 GiB: on 1 vCPU / 4 GiB the gateway (1.1-1.6 GiB RSS) froze
+      // the container twice while a snapshot ran. Custom types need >= 3 GiB
+      // memory per vCPU. CPU is billed on active use, memory and disk on
+      // what's provisioned.
       "instance_type": {
-        "vcpu": 1,
-        "memory_mib": 4096,
-        "disk_mb": 8000,
+        "vcpu": 2,
+        "memory_mib": 8192,
+        "disk_mb": 16000,
       },
       "max_instances": 1,
       // SSH via `wrangler containers ssh <instance-id>` (authenticated with the

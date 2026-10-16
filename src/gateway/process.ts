@@ -70,6 +70,20 @@ export async function isGatewayPortOpen(sandbox: Sandbox): Promise<boolean> {
 }
 
 /**
+ * HTTP probe of the gateway's /healthz. Stricter than the TCP probe: a gateway
+ * whose event loop is stuck still accepts TCP connections (the kernel does
+ * that) but never answers, which is how it looked while the container was
+ * starved for memory/CPU.
+ */
+export const GATEWAY_HEALTH_PROBE = `curl -sf -m 5 -o /dev/null http://127.0.0.1:${GATEWAY_PORT}/healthz`;
+
+/** Check that the gateway answers HTTP, not just that its port accepts connections. */
+export async function isGatewayServing(sandbox: Sandbox): Promise<boolean> {
+  const result = await sandbox.exec(GATEWAY_HEALTH_PROBE);
+  return result.exitCode === 0;
+}
+
+/**
  * Find an existing OpenClaw gateway process
  *
  * @param sandbox - The sandbox instance

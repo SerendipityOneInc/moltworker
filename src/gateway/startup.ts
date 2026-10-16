@@ -6,6 +6,7 @@ import {
   ensureGateway,
   findExistingGatewayProcess,
   isGatewayPortOpen,
+  isGatewayServing,
   killGateway,
 } from './process';
 
@@ -23,8 +24,9 @@ export interface EnsureStartedOptions {
   /** Wait for the gateway port before returning (default true) */
   waitForReady?: boolean;
   /**
-   * The caller saw the gateway stop listening: if the port is still closed
-   * once this caller holds the lock, kill the stale processes and start fresh.
+   * The caller saw the gateway stop answering: if it still doesn't answer
+   * /healthz once this caller holds the lock, kill the stale processes and
+   * start fresh. Catches a wedged gateway that still holds its port.
    */
   recover?: boolean;
 }
@@ -41,7 +43,7 @@ async function startIfNeeded(
   env: OpenClawEnv,
   recover: boolean,
 ): Promise<boolean> {
-  if (await isGatewayPortOpen(sandbox)) return false;
+  if (await isGatewayServing(sandbox)) return false;
   if (recover) {
     // Checked under the lock, so a gateway another caller just restarted
     // is never killed
