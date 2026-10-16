@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Sandbox } from '@cloudflare/sandbox';
 import { ensureStarted, type StartupState } from './startup';
-import { GATEWAY_PORT_PROBE, killGateway } from './process';
+import { GATEWAY_HEALTH_PROBE, GATEWAY_PORT_PROBE, killGateway } from './process';
 import { RESTORE_MARKER } from '../persistence';
 import {
   createMockBucket,
@@ -21,12 +21,18 @@ interface FakeContainer {
   startProcessMock: ReturnType<typeof vi.fn>;
   restoreBackupMock: ReturnType<typeof vi.fn>;
   waitForPortMock: ReturnType<typeof vi.fn>;
-  state: { portOpen: boolean; marker: boolean; gatewayRunning: boolean };
+  state: { portOpen: boolean; marker: boolean; gatewayRunning: boolean; wedged: boolean };
 }
 
 /** A container whose process list, port and restore marker change as the sandbox is used */
 function createFakeContainer(initial: Partial<FakeContainer['state']> = {}): FakeContainer {
-  const state = { portOpen: false, marker: false, gatewayRunning: false, ...initial };
+  const state = {
+    portOpen: false,
+    marker: false,
+    gatewayRunning: false,
+    wedged: false,
+    ...initial,
+  };
   const waitForPortMock = vi.fn().mockResolvedValue(undefined);
   const gatewayProcess = () => ({
     id: 'proc-gateway',
@@ -49,6 +55,10 @@ function createFakeContainer(initial: Partial<FakeContainer['state']> = {}): Fak
     exec: vi.fn(async (cmd: string) => {
       if (cmd === GATEWAY_PORT_PROBE) {
         return createMockExecResult('', { exitCode: state.portOpen ? 0 : 1 });
+      }
+      if (cmd === GATEWAY_HEALTH_PROBE) {
+        // A wedged gateway holds its port but never answers HTTP
+        return createMockExecResult('', { exitCode: state.portOpen && !state.wedged ? 0 : 22 });
       }
       if (cmd.startsWith(`test -f ${RESTORE_MARKER}`)) {
         return createMockExecResult('', { exitCode: state.marker ? 0 : 1 });
@@ -188,6 +198,25 @@ describe('ensureStarted', () => {
       expect(startProcessMock).toHaveBeenCalledTimes(1);
       // The container's files are intact after a crash, so no rollback
       expect(restoreBackupMock).not.toHaveBeenCalled();
+    });
+
+    it('kills a wedged gateway that holds its port but does not answer', async () => {
+      const env = envWithSnapshot();
+      const { sandbox, startProcessMock, state } = createFakeContainer({
+        gatewayRunning: true,
+        marker: true,
+        portOpen: true,
+        wedged: true,
+      });
+      vi.mocked(killGateway).mockImplementation(async () => {
+        // Killing it frees the port
+        Object.assign(state, { gatewayRunning: false, portOpen: false, wedged: false });
+      });
+
+      await ensureStarted(sandbox, env, startup, { waitForReady: false, recover: true });
+
+      expect(killGateway).toHaveBeenCalledTimes(1);
+      expect(startProcessMock).toHaveBeenCalledTimes(1);
     });
 
     it('leaves a gateway that is listening again alone', async () => {
