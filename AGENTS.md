@@ -80,7 +80,7 @@ The Control UI sends the gateway token inside the signed WebSocket `connect` fra
 
 ### Custom Domain
 
-`vite.config.ts` reads `WORKER_CUSTOM_DOMAIN` (environment or gitignored `.env.local`) at build time and, when set, adds it as a custom domain and disables `workers.dev`. Keep deployment-specific hostnames out of `wrangler.jsonc`. Container SSH (`ssh` + `authorized_keys`, ssh-ed25519 only) is configured directly in `wrangler.jsonc`; the Vite plugin emits `ssh` as `wrangler_ssh` in the built config, which is expected.
+`vite.config.ts` reads `WORKER_CUSTOM_DOMAIN` (environment or gitignored `.env.local`) at build time and, when set, adds it as a custom domain and disables `workers.dev`. Keep deployment-specific hostnames out of `wrangler.jsonc`. Container SSH (`ssh` + `authorized_keys`, ssh-ed25519 only) is configured directly in `wrangler.jsonc`; the Vite plugin emits `ssh` as `wrangler_ssh` in the built config, which is expected. Connect with `ssh -o ProxyCommand="npx wrangler containers ssh %h --stdio" cloudchamber@<instance-id>` (instance id from `wrangler containers instances <app-id>`; the user must be `cloudchamber`, any other gets `Permission denied`). The instance must be running, and right after a deploy its id answers `INSTANCE_NOT_READY` / not found until the rollout settles.
 
 ### CLI Commands
 
@@ -251,6 +251,9 @@ OpenClaw has strict config validation. Common gotchas:
 - `gateway.mode` must be `"local"` for headless operation
 - No `webchat` channel - the Control UI is served automatically
 - `gateway.bind` is not a config option - use `--bind` CLI flag
+- Model selection (OpenClaw >= 2026.10): `/model` and the Telegram picker are restricted by `agents.defaults.modelPolicy.allow` (supports `provider/*`), not by `agents.defaults.models` (aliases only). Upgrading from 2026.9 migrates the old `agents.defaults.models` keys into `modelPolicy.allow`, so check it after an upgrade.
+- Credentials in config: use a SecretRef (`{ source: "env", provider: "default", id: "VAR" }`) for `models.providers.*.apiKey` and `${VAR}` for other strings, so keys never land in `openclaw.json` or snapshots. `openclaw config patch` resolves SecretRefs against its own environment, which in an SSH session lacks the container's env vars.
+- `CF_AI_GATEWAY_MODEL` makes `start-openclaw.sh` rewrite its provider entry (one model, `maxTokens: 8192`, plaintext key) on every start, overwriting edits to that provider. Leave it unset when models are managed in `openclaw.json`.
 
 See [OpenClaw docs](https://docs.openclaw.ai/) for full schema.
 
