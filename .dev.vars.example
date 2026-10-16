@@ -43,6 +43,7 @@ MOLTBOT_GATEWAY_TOKEN=dev-token-change-in-prod
 
 # Optional chat channels
 # TELEGRAM_BOT_TOKEN=optional
+# WATCHDOG_TELEGRAM_CHAT_ID=optional  # Telegram chat for gateway watchdog alerts
 # DISCORD_BOT_TOKEN=optional
 
 # CDP (Chrome DevTools Protocol) configuration for browser automation

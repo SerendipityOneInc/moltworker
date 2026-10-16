@@ -17,8 +17,8 @@ export async function handleScheduled(env: OpenClawEnv): Promise<void> {
   // Run each independently so a failure in one doesn't skip the others
   const results = await Promise.allSettled([
     runGatewayWatchdog(env, sandbox).then((result) => {
-      if (result.status === 'started') {
-        console.log('[WATCHDOG] Gateway was not running, started it');
+      if (result.status !== 'running' && result.status !== 'disabled') {
+        console.log('[WATCHDOG] Result:', JSON.stringify(result));
       }
     }),
     runScheduledBackup(env, sandbox).then((result) => {

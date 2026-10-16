@@ -21,4 +21,16 @@ export class Sandbox extends BaseSandbox<OpenClawEnv> {
   async ensureStarted(options?: EnsureStartedOptions): Promise<boolean> {
     return ensureStarted(this, this.env, this.startup, options);
   }
+
+  /**
+   * Destroy a container that no longer answers exec, so the next
+   * ensureStarted gets a fresh one (restored from the latest snapshot).
+   *
+   * Also drops the in-flight startup: a startup that hung on the frozen
+   * container would otherwise make every later caller wait on it forever.
+   */
+  async resetContainer(): Promise<void> {
+    this.startup = { pending: null };
+    await this.destroy();
+  }
 }

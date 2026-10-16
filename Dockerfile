@@ -40,7 +40,8 @@ RUN mkdir -p /home/openclaw/.openclaw \
     && ln -s /home/openclaw/clawd /root/clawd
 
 # Copy startup script
-# Build cache bust: 2026-10-16-v38-openclaw-2026.10.4
+# Build cache bust (a LABEL, so the image changes and a new container rolls out)
+LABEL moltworker.build="2026-10-16-v39"
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 

@@ -476,6 +476,7 @@ The previous `AI_GATEWAY_API_KEY` + `AI_GATEWAY_BASE_URL` approach is still supp
 | `BACKUP_BUCKET_NAME` | No | R2 bucket name, e.g. `moltbot-data` (required for R2 storage) |
 | `TELEGRAM_BOT_TOKEN` | No | Telegram bot token |
 | `TELEGRAM_DM_POLICY` | No | Telegram DM policy: `pairing` (default) or `open` |
+| `WATCHDOG_TELEGRAM_CHAT_ID` | No | Telegram chat ID (e.g. your user ID) that receives gateway watchdog alerts, sent with `TELEGRAM_BOT_TOKEN`. Unset disables alerts |
 | `DISCORD_BOT_TOKEN` | No | Discord bot token |
 | `DISCORD_DM_POLICY` | No | Discord DM policy: `pairing` (default) or `open` |
 | `SLACK_BOT_TOKEN` | No | Slack bot token |
