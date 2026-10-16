@@ -51,6 +51,9 @@ export interface OpenClawEnv {
 
   // Automatic backups (only when SANDBOX_SLEEP_AFTER is 'never')
   BACKUP_INTERVAL_MINUTES?: string; // Minutes between snapshots (default: 15, 0 disables)
+
+  // Gateway watchdog alerts, sent with TELEGRAM_BOT_TOKEN (see notify/telegram.ts)
+  WATCHDOG_TELEGRAM_CHAT_ID?: string; // Telegram chat that receives watchdog alerts; unset disables them
 }
 
 /**

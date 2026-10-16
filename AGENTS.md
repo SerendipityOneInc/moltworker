@@ -23,9 +23,11 @@ src/
 ├── persistence.ts    # Snapshot backup/restore of /home/openclaw
 ├── cron/             # Workers Cron Trigger handlers
 │   ├── handler.ts    # Entry point: watchdog + scheduled backups + cron wake
-│   ├── watchdog.ts   # Restart the gateway when it is down
+│   ├── watchdog.ts   # Restart a dead or hung gateway, alert on Telegram
 │   ├── backup.ts     # Automatic backup scheduling
 │   └── wake.ts       # Wake container before OpenClaw cron jobs
+├── notify/
+│   └── telegram.ts   # Operator alerts via the Telegram Bot API
 ├── auth/             # Cloudflare Access authentication
 │   ├── jwt.ts        # JWT verification
 │   ├── jwks.ts       # JWKS fetching and caching
@@ -57,7 +59,7 @@ src/
 
 ### Gateway Startup
 
-Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard. The cron trigger calls `ensureStarted({ waitForReady: false })` every minute (`src/cron/watchdog.ts`, only when `SANDBOX_SLEEP_AFTER=never`), so a container that dies comes back within about a minute instead of staying down until the next request; it logs `[WATCHDOG]` when it had to start the gateway. Port checks use bash's `/dev/tcp` (`GATEWAY_PORT_PROBE`): the image has no `nc`.
+Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard. The cron trigger calls `ensureStarted({ waitForReady: false })` every minute (`src/cron/watchdog.ts`, only when `SANDBOX_SLEEP_AFTER=never`), so a container that dies comes back within about a minute instead of staying down until the next request; it logs `[WATCHDOG]` when it acts. It also catches a gateway that is alive but not answering: the port probe has a 30s deadline, an incident is tracked in R2 (`watchdog-state.json`), a port that stays closed for 10 minutes gets `{ recover: true }`, and a container whose exec times out or fails for 3 minutes (frozen by memory/CPU exhaustion) is destroyed via `sandbox.resetContainer()` so the next run starts a fresh one from the latest snapshot. Actions are 10 minutes apart. Each action, a long outage (reminded every 30 minutes) and the recovery after an alert go to Telegram through the Bot API from the Worker (`src/notify/telegram.ts`), since OpenClaw's own Telegram channel lives in the container; it needs `TELEGRAM_BOT_TOKEN` and `WATCHDOG_TELEGRAM_CHAT_ID`. Don't run several OpenClaw CLI commands at once inside the container: each takes hundreds of MB next to a ~1.6 GiB gateway, and on a 4 GiB instance (especially during a snapshot's `mksquashfs`) that froze the container for over an hour. Port checks use bash's `/dev/tcp` (`GATEWAY_PORT_PROBE`): the image has no `nc`.
 
 ### Proxy Headers
 
@@ -124,7 +126,7 @@ Current test coverage:
 - `persistence.test.ts` - Snapshot create and restore
 - `cron/backup.test.ts` - Automatic backup scheduling
 - `cron/wake.test.ts` - Cron wake-ahead logic
-- `cron/watchdog.test.ts` - Gateway watchdog
+- `cron/watchdog.test.ts` - Gateway watchdog (start, hang detection, container reset, alerts)
 - `gateway/startup.test.ts` - Serialized startup, restore ordering, recovery
 
 When adding new functionality, add corresponding tests.
@@ -204,11 +206,13 @@ Local development with `wrangler dev` has issues proxying WebSocket connections 
 
 ## Docker Image Caching
 
-The Dockerfile includes a cache bust comment. When changing `start-openclaw.sh`, bump the version:
+The Dockerfile has a cache-bust `LABEL` before `COPY start-openclaw.sh`. Bump it when changing `start-openclaw.sh`, or to force a new container (e.g. one that hangs):
 
 ```dockerfile
-# Build cache bust: 2026-02-06-v28-openclaw-upgrade
+LABEL moltworker.build="2026-10-16-v39"
 ```
+
+A comment change doesn't alter the image, so the deploy reports "no changes" and the old container keeps running.
 
 ## Gateway Configuration
 
