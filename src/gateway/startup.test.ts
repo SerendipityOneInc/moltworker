@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Sandbox } from '@cloudflare/sandbox';
 import { ensureStarted, type StartupState } from './startup';
-import { killGateway } from './process';
+import { GATEWAY_PORT_PROBE, killGateway } from './process';
 import { RESTORE_MARKER } from '../persistence';
 import {
   createMockBucket,
@@ -47,7 +47,7 @@ function createFakeContainer(initial: Partial<FakeContainer['state']> = {}): Fak
     startProcess: startProcessMock,
     restoreBackup: restoreBackupMock,
     exec: vi.fn(async (cmd: string) => {
-      if (cmd.startsWith('nc -z')) {
+      if (cmd === GATEWAY_PORT_PROBE) {
         return createMockExecResult('', { exitCode: state.portOpen ? 0 : 1 });
       }
       if (cmd.startsWith(`test -f ${RESTORE_MARKER}`)) {
@@ -84,12 +84,13 @@ describe('ensureStarted', () => {
     const env = envWithSnapshot();
     const { sandbox, startProcessMock, restoreBackupMock } = createFakeContainer();
 
-    await Promise.all([
+    const started = await Promise.all([
       ensureStarted(sandbox, env, startup, { waitForReady: false }),
       ensureStarted(sandbox, env, startup, { waitForReady: false }),
       ensureStarted(sandbox, env, startup, { waitForReady: false }),
     ]);
 
+    expect(started).toEqual([true, true, true]);
     expect(restoreBackupMock).toHaveBeenCalledTimes(1);
     expect(startProcessMock).toHaveBeenCalledTimes(1);
     expect(startup.pending).toBeNull();
@@ -112,7 +113,7 @@ describe('ensureStarted', () => {
       gatewayRunning: true,
     });
 
-    await ensureStarted(sandbox, env, startup, { waitForReady: false });
+    expect(await ensureStarted(sandbox, env, startup, { waitForReady: false })).toBe(false);
 
     expect(restoreBackupMock).not.toHaveBeenCalled();
     expect(startProcessMock).not.toHaveBeenCalled();
@@ -124,7 +125,7 @@ describe('ensureStarted', () => {
       portOpen: true,
     });
 
-    await ensureStarted(sandbox, env, startup, { waitForReady: false });
+    expect(await ensureStarted(sandbox, env, startup, { waitForReady: false })).toBe(false);
 
     expect(restoreBackupMock).not.toHaveBeenCalled();
     expect(startProcessMock).not.toHaveBeenCalled();

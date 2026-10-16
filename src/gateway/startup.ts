@@ -16,7 +16,7 @@ import {
  * deployment.
  */
 export interface StartupState {
-  pending: Promise<void> | null;
+  pending: Promise<boolean> | null;
 }
 
 export interface EnsureStartedOptions {
@@ -36,20 +36,25 @@ export interface EnsureStartedOptions {
  * remounts the directory, so doing it under a running gateway would roll its
  * state back and detach its later writes from the backup.
  */
-async function startIfNeeded(sandbox: Sandbox, env: OpenClawEnv, recover: boolean): Promise<void> {
-  if (await isGatewayPortOpen(sandbox)) return;
+async function startIfNeeded(
+  sandbox: Sandbox,
+  env: OpenClawEnv,
+  recover: boolean,
+): Promise<boolean> {
+  if (await isGatewayPortOpen(sandbox)) return false;
   if (recover) {
     // Checked under the lock, so a gateway another caller just restarted
     // is never killed
     await killGateway(sandbox);
   } else if (await findExistingGatewayProcess(sandbox)) {
-    return;
+    return false;
   }
 
   // Don't start with empty state if a restore fails — throw so the caller
   // reports the error and retries, instead of running a blank gateway.
   await restoreIfNeeded(sandbox, env.BACKUP_BUCKET);
   await ensureGateway(sandbox, env, { waitForReady: false });
+  return true;
 }
 
 /**
@@ -57,24 +62,26 @@ async function startIfNeeded(sandbox: Sandbox, env: OpenClawEnv, recover: boolea
  * many requests arrive at the same time.
  *
  * Concurrent callers share one startup. With `waitForReady` (the default),
- * each caller then waits for the gateway port on its own.
+ * each caller then waits for the gateway port on its own. Resolves to true
+ * when the shared startup had to start the gateway (it wasn't running).
  */
 export async function ensureStarted(
   sandbox: Sandbox,
   env: OpenClawEnv,
   state: StartupState,
   options?: EnsureStartedOptions,
-): Promise<void> {
+): Promise<boolean> {
   if (!state.pending) {
     state.pending = startIfNeeded(sandbox, env, options?.recover === true).finally(() => {
       state.pending = null;
     });
   }
-  await state.pending;
+  const started = await state.pending;
 
   if (options?.waitForReady !== false) {
     await waitForGateway(sandbox);
   }
+  return started;
 }
 
 /**

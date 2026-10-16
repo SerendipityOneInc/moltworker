@@ -22,7 +22,8 @@ src/
 ├── config.ts         # Constants (ports, timeouts, paths)
 ├── persistence.ts    # Snapshot backup/restore of /home/openclaw
 ├── cron/             # Workers Cron Trigger handlers
-│   ├── handler.ts    # Entry point: scheduled backups + cron wake
+│   ├── handler.ts    # Entry point: watchdog + scheduled backups + cron wake
+│   ├── watchdog.ts   # Restart the gateway when it is down
 │   ├── backup.ts     # Automatic backup scheduling
 │   └── wake.ts       # Wake container before OpenClaw cron jobs
 ├── auth/             # Cloudflare Access authentication
@@ -56,7 +57,7 @@ src/
 
 ### Gateway Startup
 
-Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard.
+Always start the gateway with `sandbox.ensureStarted()` (RPC to the `Sandbox` Durable Object in `src/sandbox.ts`), never `ensureGateway()` directly. All isolates reach the same Durable Object, which runs restore + start at most once however many requests race (the loading page's `/api/status` poll and the browser's favicon request used to start two gateways on every cold start). Pass `{ waitForReady: false }` to only kick off startup, and `{ recover: true }` after seeing the gateway stop listening: under the lock it kills stale processes only if the port is still closed. `start-openclaw.sh` also takes a `flock` during onboard/config as a container-side guard. The cron trigger calls `ensureStarted({ waitForReady: false })` every minute (`src/cron/watchdog.ts`, only when `SANDBOX_SLEEP_AFTER=never`), so a container that dies comes back within about a minute instead of staying down until the next request; it logs `[WATCHDOG]` when it had to start the gateway. Port checks use bash's `/dev/tcp` (`GATEWAY_PORT_PROBE`): the image has no `nc`.
 
 ### Proxy Headers
 
@@ -123,6 +124,8 @@ Current test coverage:
 - `persistence.test.ts` - Snapshot create and restore
 - `cron/backup.test.ts` - Automatic backup scheduling
 - `cron/wake.test.ts` - Cron wake-ahead logic
+- `cron/watchdog.test.ts` - Gateway watchdog
+- `gateway/startup.test.ts` - Serialized startup, restore ordering, recovery
 
 When adding new functionality, add corresponding tests.
 

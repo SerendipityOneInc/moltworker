@@ -4,16 +4,23 @@ import type { Sandbox } from '../sandbox';
 import { buildSandboxOptions } from '../index';
 import { shouldWakeContainer, DEFAULT_LEAD_TIME_MS, CRON_STORE_R2_KEY } from './wake';
 import { runScheduledBackup } from './backup';
+import { runGatewayWatchdog } from './watchdog';
 
 /**
- * Handle Workers Cron Trigger: take automatic backups when due, and wake the
- * container if OpenClaw has upcoming cron jobs.
+ * Handle Workers Cron Trigger: restart the gateway if it is down, take
+ * automatic backups when due, and wake the container if OpenClaw has
+ * upcoming cron jobs.
  */
 export async function handleScheduled(env: OpenClawEnv): Promise<void> {
   const sandbox = getSandbox(env.Sandbox, 'openclaw', buildSandboxOptions(env));
 
-  // Run both independently so a failure in one doesn't skip the other
+  // Run each independently so a failure in one doesn't skip the others
   const results = await Promise.allSettled([
+    runGatewayWatchdog(env, sandbox).then((result) => {
+      if (result.status === 'started') {
+        console.log('[WATCHDOG] Gateway was not running, started it');
+      }
+    }),
     runScheduledBackup(env, sandbox).then((result) => {
       if (result.status !== 'not_due' && result.status !== 'disabled') {
         console.log('[BACKUP] Scheduled backup result:', JSON.stringify(result));

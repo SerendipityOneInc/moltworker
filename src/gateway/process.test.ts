@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { findExistingGatewayProcess, isGatewayPortOpen, killGateway } from './process';
+import {
+  findExistingGatewayProcess,
+  GATEWAY_PORT_PROBE,
+  isGatewayPortOpen,
+  killGateway,
+} from './process';
 import type { Sandbox, Process } from '@cloudflare/sandbox';
 import { createMockSandbox, createMockExecResult } from '../test-utils';
 
@@ -158,21 +163,25 @@ describe('findExistingGatewayProcess', () => {
 });
 
 describe('isGatewayPortOpen', () => {
-  it('returns true when port is open (nc exits 0)', async () => {
+  it('returns true when port is open (probe exits 0)', async () => {
     const { sandbox, execMock } = createMockSandbox();
     execMock.mockResolvedValue(createMockExecResult('', { exitCode: 0 }));
 
     const result = await isGatewayPortOpen(sandbox);
     expect(result).toBe(true);
-    expect(execMock).toHaveBeenCalledWith('nc -z localhost 18789');
+    expect(execMock).toHaveBeenCalledWith(GATEWAY_PORT_PROBE);
   });
 
-  it('returns false when port is closed (nc exits non-zero)', async () => {
+  it('returns false when port is closed (probe exits non-zero)', async () => {
     const { sandbox, execMock } = createMockSandbox();
     execMock.mockResolvedValue(createMockExecResult('', { exitCode: 1 }));
 
     const result = await isGatewayPortOpen(sandbox);
     expect(result).toBe(false);
+  });
+
+  it('probes with bash /dev/tcp, since the image has no nc', () => {
+    expect(GATEWAY_PORT_PROBE).toBe("timeout 3 bash -c '</dev/tcp/127.0.0.1/18789'");
   });
 
   it('propagates errors from sandbox.exec', async () => {
