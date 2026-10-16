@@ -55,11 +55,17 @@ export async function killGateway(sandbox: Sandbox): Promise<void> {
 }
 
 /**
+ * TCP probe for the gateway port. Uses bash's /dev/tcp because the image has
+ * no nc: the old `nc -z` probe exited 127 and always reported the port closed.
+ */
+export const GATEWAY_PORT_PROBE = `timeout 3 bash -c '</dev/tcp/127.0.0.1/${GATEWAY_PORT}'`;
+
+/**
  * Check if the gateway port is already listening via a TCP probe.
  * Used as a safety net when listProcesses() fails to detect the gateway.
  */
 export async function isGatewayPortOpen(sandbox: Sandbox): Promise<boolean> {
-  const result = await sandbox.exec(`nc -z localhost ${GATEWAY_PORT}`);
+  const result = await sandbox.exec(GATEWAY_PORT_PROBE);
   return result.exitCode === 0;
 }
 

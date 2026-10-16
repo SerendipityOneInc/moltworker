@@ -15,9 +15,10 @@ export class Sandbox extends BaseSandbox<OpenClawEnv> {
 
   /**
    * Start the gateway if it isn't running (restoring state first), shared by
-   * concurrent callers. Called over RPC from the Worker.
+   * concurrent callers. Called over RPC from the Worker. Resolves to true when
+   * the gateway had to be started.
    */
-  async ensureStarted(options?: EnsureStartedOptions): Promise<void> {
-    await ensureStarted(this, this.env, this.startup, options);
+  async ensureStarted(options?: EnsureStartedOptions): Promise<boolean> {
+    return ensureStarted(this, this.env, this.startup, options);
   }
 }
