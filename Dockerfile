@@ -41,7 +41,7 @@ RUN mkdir -p /home/openclaw/.openclaw \
 
 # Copy startup script
 # Build cache bust (a LABEL, so the image changes and a new container rolls out)
-LABEL moltworker.build="2026-10-16-v39"
+LABEL moltworker.build="2026-10-19-v40-local-disk-restore"
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 

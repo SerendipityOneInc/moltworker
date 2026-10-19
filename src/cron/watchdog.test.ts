@@ -8,6 +8,7 @@ import {
   ACTION_COOLDOWN_MS,
   REPEAT_ALERT_MS,
   PROBE_TIMEOUT_MS,
+  LEASE_MS,
   type WatchdogState,
 } from './watchdog';
 import { createMockEnv, createMockExecResult } from '../test-utils';
@@ -163,8 +164,67 @@ describe('runGatewayWatchdog', () => {
 
     expect(result).toEqual({ status: 'reset', downMs: UNRESPONSIVE_THRESHOLD_MS });
     expect(resetContainer).toHaveBeenCalledOnce();
-    expect(alerts()).toEqual([expect.stringContaining('已强制重置')]);
+    expect(alerts()).toEqual([expect.stringContaining('已发起强制重置')]);
     expect(state()).toEqual({ unhealthySince: since, lastActionMs: NOW, lastAlertMs: NOW });
+  });
+
+  it('records the reset and holds the lease before waiting on it', async () => {
+    const since = NOW - UNRESPONSIVE_THRESHOLD_MS;
+    const { bucket, state } = createBucket({ unhealthySince: since });
+    const { sandbox, resetContainer } = createSandbox('error');
+    let seenDuringReset: WatchdogState | undefined;
+    resetContainer.mockImplementation(async () => {
+      seenDuringReset = state();
+    });
+
+    await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
+
+    expect(seenDuringReset).toEqual({
+      unhealthySince: since,
+      lastActionMs: NOW,
+      leaseUntil: NOW + LEASE_MS,
+    });
+    expect(state()?.leaseUntil).toBeUndefined();
+  });
+
+  it('skips while another run holds the lease', async () => {
+    const { bucket } = createBucket({
+      unhealthySince: NOW - 10 * 60_000,
+      leaseUntil: NOW + 60_000,
+    });
+    const { sandbox, ensureStarted, resetContainer } = createSandbox('error');
+
+    const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
+
+    expect(result).toEqual({ status: 'busy' });
+    expect(ensureStarted).not.toHaveBeenCalled();
+    expect(resetContainer).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('takes over an expired lease', async () => {
+    const since = NOW - UNRESPONSIVE_THRESHOLD_MS;
+    const { bucket } = createBucket({ unhealthySince: since, leaseUntil: NOW - 1 });
+    const { sandbox, resetContainer } = createSandbox('error');
+
+    const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
+
+    expect(result.status).toBe('reset');
+    expect(resetContainer).toHaveBeenCalledOnce();
+  });
+
+  it('reports a reset that failed instead of claiming it happened', async () => {
+    const since = NOW - UNRESPONSIVE_THRESHOLD_MS;
+    const { bucket, state } = createBucket({ unhealthySince: since });
+    const { sandbox, resetContainer } = createSandbox('error');
+    resetContainer.mockRejectedValue(new Error('destroy failed'));
+
+    const result = await runGatewayWatchdog(createEnv(bucket), sandbox, NOW);
+
+    expect(result).toEqual({ status: 'reset_failed', downMs: UNRESPONSIVE_THRESHOLD_MS });
+    expect(alerts()).toEqual([expect.stringContaining('强制重置失败')]);
+    // Still counts as an action, so the cooldown applies before the next try
+    expect(state()?.lastActionMs).toBe(NOW);
   });
 
   it('does not reset again during the cooldown, and reminds at most every 30 minutes', async () => {
