@@ -3,7 +3,15 @@ import type { Sandbox } from '@cloudflare/sandbox';
 /**
  * Persistence for /home/openclaw (config + workspace + skills) using Sandbox
  * SDK snapshots (createBackup/restoreBackup): squashfs archives in the
- * BACKUP_BUCKET R2 bucket that restore instantly via a FUSE overlay.
+ * BACKUP_BUCKET R2 bucket.
+ *
+ * restoreBackup mounts a snapshot as a FUSE overlay (squashfuse +
+ * fuse-overlayfs). We restore into a staging directory and copy it onto the
+ * container's local disk instead of running from that mount: every read and
+ * write through the FUSE daemons was slow, the container froze while
+ * mksquashfs read the overlay during a snapshot, and SQLite's WAL (which
+ * shares memory between processes via mmap of the -shm file) corrupted
+ * OpenClaw's database on it.
  *
  * We keep the last MAX_SNAPSHOTS handles and fall back to older ones if the
  * newest can't be restored.
@@ -29,6 +37,21 @@ const LEGACY_HANDLE_KEY = 'backup-handle.json';
 export const MAX_SNAPSHOTS = 3;
 
 export const RESTORE_MARKER = '/tmp/moltworker-state-ok';
+
+/** Where restoreBackup mounts a snapshot before it is copied to BACKUP_DIR */
+export const RESTORE_STAGING_DIR = '/var/tmp/moltworker-restore';
+
+/**
+ * Copy the mounted snapshot onto BACKUP_DIR on local disk. Copies into the
+ * existing directory rather than swapping it: the sandbox server's working
+ * directory is /home/openclaw/clawd (the image WORKDIR), and replacing the
+ * directory would leave it in a deleted one. Restores only run in a fresh
+ * container, where BACKUP_DIR holds just the image's empty skeleton. A
+ * failed copy aborts startup without the restore marker, so the next attempt
+ * copies again. The staging mount stays: unmounting it behind the SDK's back
+ * isn't worth the risk, and nothing reads it after this.
+ */
+export const MATERIALIZE_RESTORE = `cp -a ${RESTORE_STAGING_DIR}/. ${BACKUP_DIR}/`;
 
 export interface SnapshotHandle {
   id: string;
@@ -93,8 +116,8 @@ async function unmountBackupDir(sandbox: Sandbox): Promise<void> {
 /**
  * Whether this container's /home/openclaw was already restored (or found
  * nothing to restore) since the container started, and is still readable.
- * A restored directory is a FUSE overlay; if its daemon dies the mount
- * answers ENOTCONN and must be restored again.
+ * Containers restored by older Worker versions run on a FUSE overlay; if its
+ * daemon dies the mount answers ENOTCONN and must be restored again.
  */
 export async function hasRestoreMarker(sandbox: Sandbox): Promise<boolean> {
   const result = await sandbox.exec(
@@ -111,9 +134,11 @@ export async function hasRestoreMarker(sandbox: Sandbox): Promise<boolean> {
  * snapshots, so a temporary failure never silently rolls state back.
  *
  * Only call this right before starting the gateway, with no gateway running
- * (see gateway/startup.ts): restoreBackup unmounts and remounts
- * /home/openclaw, which would pull files out from under a running gateway and
- * roll its state back to the snapshot.
+ * (see gateway/startup.ts): replacing /home/openclaw would pull files out
+ * from under a running gateway and roll its state back to the snapshot.
+ *
+ * The snapshot is mounted at RESTORE_STAGING_DIR and copied onto local disk
+ * (see the module comment for why it isn't used in place).
  *
  * Whether a restore already happened is tracked by a marker in the
  * container's /tmp rather than Worker memory, since Worker isolates come and
@@ -133,7 +158,7 @@ export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promi
     const t0 = Date.now();
     try {
       // oxlint-disable-next-line no-await-in-loop
-      await sandbox.restoreBackup({ id: handle.id, dir: handle.dir });
+      await sandbox.restoreBackup({ id: handle.id, dir: RESTORE_STAGING_DIR });
     } catch (err) {
       if (!isSnapshotGoneError(err)) {
         console.error(`[persistence] Restore of ${handle.id} failed:`, err);
@@ -142,6 +167,14 @@ export async function restoreIfNeeded(sandbox: Sandbox, bucket: R2Bucket): Promi
       console.log(`[persistence] Snapshot ${handle.id} expired/gone, trying an older one`);
       gone.push(handle);
       continue;
+    }
+
+    // oxlint-disable-next-line no-await-in-loop
+    const copied = await sandbox.exec(MATERIALIZE_RESTORE);
+    if (copied.exitCode !== 0) {
+      throw new Error(
+        `Copying snapshot ${handle.id} to ${BACKUP_DIR} failed: ${copied.stderr || copied.exitCode}`,
+      );
     }
 
     if (gone.length > 0) {

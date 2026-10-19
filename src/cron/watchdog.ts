@@ -21,6 +21,12 @@ export const NOT_SERVING_THRESHOLD_MS = 10 * 60_000;
 export const ACTION_COOLDOWN_MS = 10 * 60_000;
 /** While the gateway stays down, remind the operator at most this often */
 export const REPEAT_ALERT_MS = 30 * 60_000;
+/**
+ * How long a run that found the gateway down holds the watchdog. Cron fires
+ * every minute but a run can take minutes (probe timeout, start, reset), and
+ * overlapping runs each reset the container and alerted.
+ */
+export const LEASE_MS = 5 * 60_000;
 
 /** Current incident, kept in R2 so it survives across cron runs and isolates */
 export interface WatchdogState {
@@ -30,17 +36,21 @@ export interface WatchdogState {
   lastActionMs?: number;
   /** Last alert sent for this incident */
   lastAlertMs?: number;
+  /** A run is handling the incident until then; others skip */
+  leaseUntil?: number;
 }
 
 export type GatewayHealth = 'healthy' | 'not_serving' | 'unresponsive';
 
 export type WatchdogResult =
   | { status: 'disabled' }
+  | { status: 'busy' }
   | { status: 'running' }
   | { status: 'recovered'; downMs: number }
   | { status: 'started' }
   | { status: 'restarted'; downMs: number }
   | { status: 'reset'; downMs: number }
+  | { status: 'reset_failed'; downMs: number }
   | { status: 'down'; health: GatewayHealth; downMs: number };
 
 class TimeoutError extends Error {}
@@ -110,8 +120,10 @@ export async function runGatewayWatchdog(
   }
 
   const bucket = env.BACKUP_BUCKET;
-  const state = await getState(bucket);
   const health = await checkGatewayHealth(sandbox);
+  // Read after the probe, which can take PROBE_TIMEOUT_MS: another run may
+  // have taken the lease meanwhile
+  const state = await getState(bucket);
 
   if (health === 'healthy') {
     if (state.unhealthySince === undefined) return { status: 'running' };
@@ -124,16 +136,34 @@ export async function runGatewayWatchdog(
     return { status: 'recovered', downMs };
   }
 
+  if (state.leaseUntil !== undefined && state.leaseUntil > nowMs) {
+    return { status: 'busy' };
+  }
+
   const unhealthySince = state.unhealthySince ?? nowMs;
   const downMs = nowMs - unhealthySince;
   const coolingDown =
     state.lastActionMs !== undefined && nowMs - state.lastActionMs < ACTION_COOLDOWN_MS;
   const next: WatchdogState = { ...state, unhealthySince };
+  delete next.leaseUntil;
   let result: WatchdogResult = { status: 'down', health, downMs };
   let alert: string | null = null;
 
+  const recover = health === 'not_serving' && downMs >= NOT_SERVING_THRESHOLD_MS && !coolingDown;
+  const reset = health === 'unresponsive' && downMs >= UNRESPONSIVE_THRESHOLD_MS && !coolingDown;
+  // Record the lease, and any restart or reset, before acting, so a run that
+  // starts while this one is still waiting neither acts again nor alerts
+  await bucket.put(
+    WATCHDOG_STATE_KEY,
+    JSON.stringify({
+      ...next,
+      ...(recover || reset ? { lastActionMs: nowMs } : {}),
+      leaseUntil: nowMs + LEASE_MS,
+    }),
+  );
+
   if (health === 'not_serving') {
-    const recover = downMs >= NOT_SERVING_THRESHOLD_MS && !coolingDown;
+    if (recover) next.lastActionMs = nowMs;
     try {
       const started = await withTimeout(
         sandbox.ensureStarted({ waitForReady: false, recover }),
@@ -152,17 +182,21 @@ export async function runGatewayWatchdog(
     } catch (err) {
       console.error('[WATCHDOG] Failed to start the gateway:', err);
     }
-  } else if (downMs >= UNRESPONSIVE_THRESHOLD_MS && !coolingDown) {
+  } else if (reset) {
     next.lastActionMs = nowMs;
     try {
       await withTimeout(sandbox.resetContainer(), ACTION_TIMEOUT_MS);
+      result = { status: 'reset', downMs };
+      alert =
+        `🚨 Moltworker 容器 ${minutes(downMs)} 分钟无响应，已发起强制重置。` +
+        '新容器会从最近的快照恢复，快照之后的改动会丢失。';
     } catch (err) {
       console.error('[WATCHDOG] Failed to reset the container:', err);
+      result = { status: 'reset_failed', downMs };
+      alert =
+        `🚨 Moltworker 容器 ${minutes(downMs)} 分钟无响应，强制重置失败，` +
+        `${minutes(ACTION_COOLDOWN_MS)} 分钟后重试。`;
     }
-    result = { status: 'reset', downMs };
-    alert =
-      `🚨 Moltworker 容器 ${minutes(downMs)} 分钟无响应，已强制重置。` +
-      '新容器会从最近的快照恢复，快照之后的改动会丢失。';
   }
 
   if (

@@ -26,11 +26,17 @@ export class Sandbox extends BaseSandbox<OpenClawEnv> {
    * Destroy a container that no longer answers exec, so the next
    * ensureStarted gets a fresh one (restored from the latest snapshot).
    *
+   * Returns once the destroy is under way: stopping a frozen container can
+   * take minutes, and the watchdog run that asked shouldn't wait for it.
    * Also drops the in-flight startup: a startup that hung on the frozen
    * container would otherwise make every later caller wait on it forever.
    */
   async resetContainer(): Promise<void> {
     this.startup = { pending: null };
-    await this.destroy();
+    this.ctx.waitUntil(
+      this.destroy().catch((err: unknown) => {
+        console.error('[WATCHDOG] Container destroy failed:', err);
+      }),
+    );
   }
 }

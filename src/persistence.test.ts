@@ -6,17 +6,23 @@ import {
   isSafeToBackup,
   isSnapshotGoneError,
   restoreIfNeeded,
+  MATERIALIZE_RESTORE,
   MAX_SNAPSHOTS,
   RESTORE_MARKER,
+  RESTORE_STAGING_DIR,
 } from './persistence';
 import { createMockBucket, createMockExecResult, seedJson, suppressConsole } from './test-utils';
 
-function createBackupSandbox(options: { restored?: boolean } = {}) {
-  const execMock = vi.fn(async (cmd: string) =>
-    cmd.startsWith(`test -f ${RESTORE_MARKER}`)
-      ? createMockExecResult('', { exitCode: options.restored ? 0 : 1 })
-      : createMockExecResult(),
-  );
+function createBackupSandbox(options: { restored?: boolean; copyFails?: boolean } = {}) {
+  const execMock = vi.fn(async (cmd: string) => {
+    if (cmd.startsWith(`test -f ${RESTORE_MARKER}`)) {
+      return createMockExecResult('', { exitCode: options.restored ? 0 : 1 });
+    }
+    if (cmd === MATERIALIZE_RESTORE && options.copyFails) {
+      return createMockExecResult('', { exitCode: 1, stderr: 'No space left on device' });
+    }
+    return createMockExecResult();
+  });
   const restoreBackupMock = vi.fn().mockResolvedValue({ success: true });
   const createBackupMock = vi.fn();
   const readFileMock = vi.fn();
@@ -63,17 +69,40 @@ describe('persistence', () => {
       expect(wroteMarker(execMock)).toBe(true);
     });
 
-    it('restores the newest snapshot', async () => {
+    it('restores the newest snapshot into staging and copies it onto local disk', async () => {
       const { bucket, objects } = createMockBucket();
       seedJson(objects, 'backup-handles.json', {
         snapshots: [handle('new', '2026-09-02T00:00:00Z'), handle('old', '2026-09-01T00:00:00Z')],
       });
-      const { sandbox, restoreBackupMock } = createBackupSandbox();
+      const { sandbox, execMock, restoreBackupMock } = createBackupSandbox();
 
       await restoreIfNeeded(sandbox, bucket);
 
       expect(restoreBackupMock).toHaveBeenCalledTimes(1);
-      expect(restoreBackupMock).toHaveBeenCalledWith({ id: 'new', dir: '/home/openclaw' });
+      expect(restoreBackupMock).toHaveBeenCalledWith({ id: 'new', dir: RESTORE_STAGING_DIR });
+      const commands = execCommands(execMock);
+      const copyAt = commands.indexOf(MATERIALIZE_RESTORE);
+      expect(copyAt).toBeGreaterThan(-1);
+      expect(commands.findIndex((cmd) => cmd.endsWith(`> ${RESTORE_MARKER}`))).toBeGreaterThan(
+        copyAt,
+      );
+    });
+
+    it('copies into the existing directory, keeping its inodes', () => {
+      expect(MATERIALIZE_RESTORE).toBe(`cp -a ${RESTORE_STAGING_DIR}/. /home/openclaw/`);
+    });
+
+    it('fails startup without writing the marker when the copy fails', async () => {
+      const { bucket, objects } = createMockBucket();
+      seedJson(objects, 'backup-handles.json', {
+        snapshots: [handle('new', '2026-09-02T00:00:00Z'), handle('old', '2026-09-01T00:00:00Z')],
+      });
+      const { sandbox, execMock, restoreBackupMock } = createBackupSandbox({ copyFails: true });
+
+      await expect(restoreIfNeeded(sandbox, bucket)).rejects.toThrow('No space left on device');
+
+      expect(restoreBackupMock).toHaveBeenCalledTimes(1);
+      expect(wroteMarker(execMock)).toBe(false);
     });
 
     it('skips restore when this container was already restored', async () => {
@@ -100,7 +129,7 @@ describe('persistence', () => {
 
       await restoreIfNeeded(sandbox, bucket);
 
-      expect(restoreBackupMock).toHaveBeenLastCalledWith({ id: 'old', dir: '/home/openclaw' });
+      expect(restoreBackupMock).toHaveBeenLastCalledWith({ id: 'old', dir: RESTORE_STAGING_DIR });
       expect((await getSnapshotHandles(bucket)).map((h) => h.id)).toEqual(['old']);
     });
 
@@ -141,7 +170,7 @@ describe('persistence', () => {
 
       await restoreIfNeeded(sandbox, bucket);
 
-      expect(restoreBackupMock).toHaveBeenCalledWith({ id: 'legacy', dir: '/home/openclaw' });
+      expect(restoreBackupMock).toHaveBeenCalledWith({ id: 'legacy', dir: RESTORE_STAGING_DIR });
     });
   });
 
